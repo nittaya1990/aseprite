@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2016  David Capello
 //
 // This program is distributed under the terms of
@@ -11,6 +11,7 @@
 
 #include "app/tools/active_tool.h"
 
+#include "app/app.h"
 #include "app/color.h"
 #include "app/pref/preferences.h"
 #include "app/tools/active_tool_observer.h"
@@ -18,6 +19,7 @@
 #include "app/tools/pointer.h"
 #include "app/tools/tool_box.h"
 #include "app/ui/color_bar.h"
+#include "app/ui/context_bar.h"
 
 namespace app {
 namespace tools {
@@ -45,6 +47,7 @@ private:
 ActiveToolManager::ActiveToolManager(ToolBox* toolbox)
   : m_toolbox(toolbox)
   , m_quickTool(nullptr)
+  , m_allowQuickToolChanges(true)
   , m_rightClick(false)
   , m_rightClickTool(nullptr)
   , m_rightClickInk(nullptr)
@@ -55,14 +58,16 @@ ActiveToolManager::ActiveToolManager(ToolBox* toolbox)
 
 Tool* ActiveToolManager::activeTool() const
 {
-  if (m_quickTool)
-    return m_quickTool;
+  if (m_allowQuickToolChanges) {
+    if (m_quickTool)
+      return m_quickTool;
 
-  if (m_rightClickTool)
-    return m_rightClickTool;
+    if (m_rightClickTool)
+      return m_rightClickTool;
 
-  if (m_proximityTool)
-    return m_proximityTool;
+    if (m_proximityTool)
+      return m_proximityTool;
+  }
 
   // Active tool should never returns null
   ASSERT(m_selectedTool);
@@ -79,11 +84,10 @@ Ink* ActiveToolManager::activeInk() const
   if (ink->isPaint() && !ink->isEffect()) {
     const tools::InkType inkType = Preferences::instance().tool(tool).ink();
     app::Color color;
-#ifdef ENABLE_UI
-    ColorBar* colorbar = ColorBar::instance();
-    color = (m_rightClick ? colorbar->getBgColor():
-                            colorbar->getFgColor());
-#endif
+    if (ColorBar* colorbar = ColorBar::instance()) {
+      color = (m_rightClick ? colorbar->getBgColor():
+                              colorbar->getFgColor());
+    }
     ink = adjustToolInkDependingOnSelectedInkType(ink, inkType, color);
   }
 
@@ -142,6 +146,12 @@ void ActiveToolManager::newQuickToolSelectedFromEditor(Tool* tool)
 {
   ActiveToolChangeTrigger trigger(this);
   m_quickTool = tool;
+}
+
+void ActiveToolManager::brushChanged()
+{
+  ActiveToolChangeTrigger trigger(this);
+  m_quickTool = nullptr;
 }
 
 void ActiveToolManager::regularTipProximity()
@@ -227,10 +237,24 @@ void ActiveToolManager::setSelectedTool(Tool* tool)
   notify_observers(&ActiveToolObserver::onSelectedToolChange, tool);
 }
 
+void ActiveToolManager::setAllowQuickToolChanges(const bool state)
+{
+  m_allowQuickToolChanges = state;
+}
+
 // static
 bool ActiveToolManager::isToolAffectedByRightClickMode(Tool* tool)
 {
   bool shadingMode = (Preferences::instance().tool(tool).ink() == InkType::SHADING);
+  if (shadingMode) {
+    if (auto* contextBar = App::instance()->contextBar()) {
+      // Shading ink is only enabled if we have a shade of two or more
+      // colors selected, in other case we disable it so a right-click
+      // can be used for its configured action.
+      shadingMode = (contextBar->getShade().size() >= 2);
+    }
+  }
+
   return
     ((tool->getInk(0)->isPaint() && !shadingMode) ||
      (tool->getInk(0)->isEffect())) &&

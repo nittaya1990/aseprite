@@ -1,5 +1,5 @@
 // Aseprite Document Library
-// Copyright (C) 2020-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -21,11 +21,12 @@
 namespace doc {
 
   class Cel;
+  class Grid;
   class Image;
-  class Sprite;
   class Layer;
-  class LayerImage;
   class LayerGroup;
+  class LayerImage;
+  class Sprite;
 
   //////////////////////////////////////////////////////////////////////
   // Layer class
@@ -41,10 +42,13 @@ namespace doc {
     Reference  = 64,            // Is a reference layer
 
     PersistentFlagsMask = 0xffff,
-
     Internal_WasVisible = 0x10000, // Was visible in the alternative state (Alt+click)
 
     BackgroundLayerFlags = LockMove | Background,
+
+    // Flags that change the modified flag of the document
+    // (e.g. created by undoable actions).
+    StructuralFlagsMask = Background | Reference,
   };
 
   class Layer : public WithUserData {
@@ -73,8 +77,10 @@ namespace doc {
     Layer* getPreviousInWholeHierarchy() const;
     Layer* getNextInWholeHierarchy() const;
 
-    bool isImage() const { return type() == ObjectType::LayerImage; }
+    bool isImage() const { return (type() == ObjectType::LayerImage ||
+                                   type() == ObjectType::LayerTilemap); }
     bool isGroup() const { return type() == ObjectType::LayerGroup; }
+    bool isTilemap() const { return type() == ObjectType::LayerTilemap; }
     virtual bool isBrowsable() const { return false; }
 
     bool isBackground() const  { return hasFlags(LayerFlags::Background); }
@@ -119,6 +125,7 @@ namespace doc {
         m_flags = LayerFlags(int(m_flags) & ~int(flags));
     }
 
+    virtual Grid grid() const;
     virtual Cel* cel(frame_t frame) const;
     virtual void getCels(CelList& cels) const = 0;
     virtual void displaceFrames(frame_t fromThis, frame_t delta) = 0;
@@ -138,6 +145,7 @@ namespace doc {
 
   class LayerImage : public Layer {
   public:
+    LayerImage(ObjectType type, Sprite* sprite);
     explicit LayerImage(Sprite* sprite);
     virtual ~LayerImage();
 
@@ -206,6 +214,8 @@ namespace doc {
     void allVisibleLayers(LayerList& list) const;
     void allVisibleReferenceLayers(LayerList& list) const;
     void allBrowsableLayers(LayerList& list) const;
+    void allTilemaps(LayerList& list) const;
+    std::string visibleLayerHierarchyAsString(const std::string& indent) const;
 
     void getCels(CelList& cels) const override;
     void displaceFrames(frame_t fromThis, frame_t delta) override;

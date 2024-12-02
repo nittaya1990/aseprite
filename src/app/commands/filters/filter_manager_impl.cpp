@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -27,6 +27,7 @@
 #include "app/ui/palette_view.h"
 #include "app/ui/timeline/timeline.h"
 #include "app/ui_context.h"
+#include "app/util/cel_ops.h"
 #include "app/util/range_utils.h"
 #include "doc/algorithm/shrink_bounds.h"
 #include "doc/cel.h"
@@ -63,7 +64,8 @@ FilterManagerImpl::FilterManagerImpl(Context* context, Filter* filter)
   , m_target(TARGET_ALL_CHANNELS)
   , m_celsTarget(CelsTarget::Selected)
   , m_oldPalette(nullptr)
-  , m_progressDelegate(NULL)
+  , m_taskToken(&m_noToken)
+  , m_progressDelegate(nullptr)
 {
   int x, y;
   Image* image = m_site.image(&x, &y);
@@ -120,10 +122,9 @@ void FilterManagerImpl::begin()
 
   m_row = 0;
   m_mask = (document->isMaskVisible() ? document->mask(): nullptr);
+  m_taskToken = &m_noToken; // Don't use the preview token (which can be canceled)
   updateBounds(m_mask);
 }
-
-#ifdef ENABLE_UI
 
 void FilterManagerImpl::beginForPreview()
 {
@@ -162,8 +163,6 @@ void FilterManagerImpl::beginForPreview()
     return;
   }
 }
-
-#endif // ENABLE_UI
 
 void FilterManagerImpl::end()
 {
@@ -205,6 +204,7 @@ bool FilterManagerImpl::applyStep()
 
 void FilterManagerImpl::apply()
 {
+  CommandResult result;
   bool cancelled = false;
 
   begin();
@@ -222,7 +222,24 @@ void FilterManagerImpl::apply()
     gfx::Rect output;
     if (algorithm::shrink_bounds2(m_src.get(), m_dst.get(),
                                   m_bounds, output)) {
-      if (m_cel->layer()->isBackground()) {
+      if (m_cel->layer()->isTilemap()) {
+        modify_tilemap_cel_region(
+          *m_tx,
+          m_cel, nullptr,
+          gfx::Region(output),
+          m_site.tilesetMode(),
+          [this](const doc::ImageRef& origTile,
+                 const gfx::Rect& tileBoundsInCanvas) -> doc::ImageRef {
+            return ImageRef(
+              crop_image(m_dst.get(),
+                         tileBoundsInCanvas.x,
+                         tileBoundsInCanvas.y,
+                         tileBoundsInCanvas.w,
+                         tileBoundsInCanvas.h,
+                         m_dst->maskColor()));
+          });
+      }
+      else if (m_cel->layer()->isBackground()) {
         (*m_tx)(
           new cmd::CopyRegion(
             m_cel->image(),
@@ -239,7 +256,15 @@ void FilterManagerImpl::apply()
             position()));
       }
     }
+
+    result = CommandResult(CommandResult::kOk);
   }
+  else {
+    result = CommandResult(CommandResult::kCanceled);
+  }
+
+  ASSERT(m_reader.context());
+  m_reader.context()->setCommandResult(result);
 }
 
 void FilterManagerImpl::applyToTarget()
@@ -324,7 +349,7 @@ void FilterManagerImpl::initTransaction()
 {
   ASSERT(!m_tx);
   m_writer.reset(new ContextWriter(m_reader));
-  m_tx.reset(new Tx(m_writer->context(),
+  m_tx.reset(new Tx(*m_writer,
                     m_filter->getName(),
                     ModifyDocument));
 }
@@ -342,8 +367,6 @@ void FilterManagerImpl::commitTransaction()
   m_tx->commit();
   m_writer.reset();
 }
-
-#ifdef ENABLE_UI
 
 void FilterManagerImpl::flush()
 {
@@ -394,8 +417,6 @@ void FilterManagerImpl::disablePreview()
     redrawColorPalette();
   }
 }
-
-#endif  // ENABLE_UI
 
 const void* FilterManagerImpl::getSourceAddress()
 {
@@ -455,10 +476,7 @@ void FilterManagerImpl::init(Cel* cel)
     throw InvalidAreaException();
 
   m_cel = cel;
-  m_src.reset(
-    crop_image(
-      cel->image(),
-      gfx::Rect(m_site.sprite()->bounds()).offset(-cel->position()), 0));
+  m_src = crop_cel_image(cel, 0);
   m_dst.reset(Image::createCopy(m_src.get()));
 
   m_row = -1;
@@ -511,19 +529,26 @@ void FilterManagerImpl::applyToPaletteIfNeeded()
   m_filter->applyToPalette(this);
 }
 
-#ifdef ENABLE_UI
-
 void FilterManagerImpl::redrawColorPalette()
 {
   set_current_palette(getNewPalette(), false);
   ColorBar::instance()->invalidate();
 }
 
-#endif // ENABLE_UI
-
 bool FilterManagerImpl::isMaskActive() const
 {
   return m_site.document()->isMaskVisible();
+}
+
+base::task_token& FilterManagerImpl::taskToken() const
+{
+  ASSERT(m_taskToken); // It's always pointing to a token, m_noToken by default
+  return *m_taskToken;
+}
+
+void FilterManagerImpl::setTaskToken(base::task_token& token)
+{
+  m_taskToken = &token;
 }
 
 } // namespace app

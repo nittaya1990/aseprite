@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2016-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -230,14 +230,21 @@ private:
   void onPaint(PaintEvent& ev) override {
     Graphics* g = ev.graphics();
     gfx::Rect rc = clientBounds();
-    auto skin = (SkinTheme*)theme();
+    auto theme = SkinTheme::get(this);
 
-    g->fillRect(skin->colors.textboxFace(), rc);
+    g->fillRect(theme->colors.textboxFace(), rc);
   }
 
   bool onProcessMessage(Message* msg) override {
     if (msg->type() == kLoadFileMessage) {
-      loadFile(static_cast<LoadFileMessage*>(msg)->file());
+      std::string newFile = static_cast<LoadFileMessage*>(msg)->file();
+      std::string newRelativeFile =
+        base::join_path(base::get_file_path(m_file),
+                        newFile);
+      if (base::is_file(newRelativeFile)) {
+        newFile = newRelativeFile;
+      }
+      loadFile(newFile);
       return true;
     }
 
@@ -265,14 +272,16 @@ private:
 
   void onInitTheme(InitThemeEvent& ev) override {
     Widget::onInitTheme(ev);
-    setBgColor(SkinTheme::instance()->colors.textboxFace());
+
+    auto theme = SkinTheme::get(this);
+    setBgColor(theme->colors.textboxFace());
     setBorder(gfx::Border(4*guiscale()));
   }
 
   void clear() {
     // Delete all children
-    while (firstChild())
-      delete firstChild();
+    while (auto child = lastChild())
+      delete child;
   }
 
   void processNode(cmark_node* root,
@@ -415,6 +424,7 @@ private:
             inImage = true;
           else if (ev_type == CMARK_EVENT_EXIT)
             inImage = false;
+          break;
         }
 
         case CMARK_NODE_LINK: {
@@ -432,6 +442,7 @@ private:
             }
             inLink = nullptr;
           }
+          break;
         }
 
       }
@@ -460,6 +471,8 @@ private:
   }
 
   void addText(const std::string& content) {
+    auto theme = SkinTheme::get(this);
+
     std::vector<std::string> words;
     base::split_string(content, words, " ");
     for (const auto& word : words)
@@ -469,7 +482,7 @@ private:
         if (word.size() > 4 &&
             std::strncmp(word.c_str(), "http", 4) == 0) {
           label = new LinkLabel(word);
-          label->setStyle(SkinTheme::instance()->styles.browserLink());
+          label->setStyle(theme->styles.browserLink());
         }
         else
           label = new Label(word);
@@ -482,8 +495,9 @@ private:
   }
 
   void addCodeInline(const std::string& content) {
+    auto theme = SkinTheme::get(this);
     auto label = new Label(content);
-    label->setBgColor(SkinTheme::instance()->colors.textboxCodeFace());
+    label->setBgColor(theme->colors.textboxCodeFace());
     addChild(label);
   }
 
@@ -491,7 +505,8 @@ private:
     auto textBox = new TextBox(content, LEFT);
     textBox->InitTheme.connect(
       [textBox]{
-        textBox->setBgColor(SkinTheme::instance()->colors.textboxCodeFace());
+        auto theme = SkinTheme::get(textBox);
+        textBox->setBgColor(theme->colors.textboxCodeFace());
         textBox->setBorder(gfx::Border(4*guiscale()));
       });
     textBox->initTheme();
@@ -502,7 +517,8 @@ private:
     auto label = new LinkLabel(url, text);
     label->InitTheme.connect(
       [label]{
-        label->setStyle(SkinTheme::instance()->styles.browserLink());
+        auto theme = SkinTheme::get(label);
+        label->setStyle(theme->styles.browserLink());
       });
     label->initTheme();
 
@@ -546,7 +562,8 @@ BrowserView::BrowserView()
   m_view.setExpansive(true);
   m_view.InitTheme.connect(
     [this]{
-      m_view.setStyle(SkinTheme::instance()->styles.workspaceView());
+      auto theme = SkinTheme::get(this);
+      m_view.setStyle(theme->styles.workspaceView());
     });
   m_view.initTheme();
 
@@ -564,17 +581,26 @@ BrowserView::~BrowserView()
 void BrowserView::loadFile(const std::string& file,
                            const std::string& section)
 {
+  if (section.empty())
+    m_title = base::get_file_title(file);
+  else
+    m_title = section;
   m_textBox->loadFile(file, section);
 }
 
 std::string BrowserView::getTabText()
 {
-  return base::get_file_title(m_textBox->file());
+  return m_title;
 }
 
 TabIcon BrowserView::getTabIcon()
 {
   return TabIcon::NONE;
+}
+
+gfx::Color BrowserView::getTabColor()
+{
+  return gfx::ColorNone;
 }
 
 WorkspaceView* BrowserView::cloneWorkspaceView()
@@ -603,7 +629,7 @@ void BrowserView::onTabPopup(Workspace* workspace)
   if (!menu)
     return;
 
-  menu->showPopup(ui::get_mouse_position());
+  menu->showPopup(mousePosInDisplay(), display());
 }
 
 } // namespace app

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2017-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,6 +14,7 @@
 #include "app/cmd/set_mask_position.h"
 #include "app/commands/command.h"
 #include "app/commands/commands.h"
+#include "app/console.h"
 #include "app/context_access.h"
 #include "app/tx.h"
 #include "app/ui/editor/editor.h"
@@ -80,11 +81,14 @@ EditorState::LeaveAction MovingSelectionState::onLeaveState(Editor* editor, Edit
     doc->generateMaskBoundaries();
   }
   else {
-    {
+    try {
       ContextWriter writer(UIContext::instance(), 1000);
-      Tx tx(writer.context(), "Move Selection Edges", DoesntModifyDocument);
+      Tx tx(writer, "Move Selection Edges", DoesntModifyDocument);
       tx(new cmd::SetMaskPosition(doc, newOrigin));
       tx.commit();
+    }
+    catch (const base::Exception& e) {
+      Console::showException(e);
     }
     doc->resetTransformation();
   }
@@ -144,8 +148,9 @@ bool MovingSelectionState::onMouseMove(Editor* editor, MouseMessage* msg)
 
 bool MovingSelectionState::onSetCursor(Editor* editor, const gfx::Point& mouseScreenPos)
 {
+  auto theme = skin::SkinTheme::get(editor);
   editor->showMouseCursor(
-    kCustomCursor, skin::SkinTheme::instance()->cursors.moveSelection());
+    kCustomCursor, theme->cursors.moveSelection());
   return true;
 }
 
@@ -156,7 +161,9 @@ bool MovingSelectionState::onUpdateStatusBar(Editor* editor)
   StatusBar::instance()->setStatusText(
     100,
     fmt::format(
-      ":pos: {} {} :size: {:3d} {:3d} :offset: {} {}",
+      ":pos: {} {}"
+      " :size: {} {}"
+      " :delta: {} {}",
       bounds.x, bounds.y,
       bounds.w, bounds.h,
       m_delta.x, m_delta.y));

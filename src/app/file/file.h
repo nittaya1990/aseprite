@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,15 +14,16 @@
 #include "app/file/file_op_config.h"
 #include "app/file/format_options.h"
 #include "app/pref/preferences.h"
-#include "base/mutex.h"
 #include "base/paths.h"
 #include "doc/frame.h"
 #include "doc/image_ref.h"
 #include "doc/pixel_format.h"
-#include "doc/selected_frames.h"
+#include "doc/frames_sequence.h"
+#include "os/color_space.h"
 
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <string>
 
 // Flags for FileOp::createLoadDocumentOperation()
@@ -71,27 +72,76 @@ namespace app {
   public:
     FileOpROI();
     FileOpROI(const Doc* doc,
+              const gfx::Rect& bounds,
               const std::string& sliceName,
               const std::string& tagName,
-              const doc::SelectedFrames& selFrames,
+              const doc::FramesSequence& frames,
               const bool adjustByTag);
 
     const Doc* document() const { return m_document; }
     doc::Slice* slice() const { return m_slice; }
     doc::Tag* tag() const { return m_tag; }
-    doc::frame_t fromFrame() const { return m_selFrames.firstFrame(); }
-    doc::frame_t toFrame() const { return m_selFrames.lastFrame(); }
-    const doc::SelectedFrames& selectedFrames() const { return m_selFrames; }
+    doc::frame_t fromFrame() const { return m_framesSeq.firstFrame(); }
+    doc::frame_t toFrame() const { return m_framesSeq.lastFrame(); }
+    const doc::FramesSequence& framesSequence() const { return m_framesSeq; }
 
     doc::frame_t frames() const {
-      return (doc::frame_t)m_selFrames.size();
+      return (doc::frame_t)m_framesSeq.size();
     }
+
+    // Returns an empty rectangle only when exporting a slice and the
+    // slice doesn't have a slice key in this specific frame.
+    gfx::Rect frameBounds(const frame_t frame) const;
+
+    // Canvas size required to store all frames (e.g. if a slice
+    // changes size on each frame, we have to keep the biggest of
+    // those sizes).
+    gfx::Size fileCanvasSize() const;
 
   private:
     const Doc* m_document;
+    gfx::Rect m_bounds;
     doc::Slice* m_slice;
     doc::Tag* m_tag;
-    doc::SelectedFrames m_selFrames;
+    doc::FramesSequence m_framesSeq;
+  };
+
+  // Used by file formats with FILE_ENCODE_ABSTRACT_IMAGE flag, to
+  // encode a sprite with an intermediate transformation on-the-fly
+  // (e.g. resizing).
+  class FileAbstractImage {
+  public:
+    virtual ~FileAbstractImage() { }
+
+    virtual int width() const { return spec().width(); }
+    virtual int height() const { return spec().height(); }
+
+    // Spec (width/height) to save the file.
+    virtual const doc::ImageSpec& spec() const = 0;
+    virtual os::ColorSpaceRef osColorSpace() const = 0;
+    virtual bool needAlpha() const = 0;
+    virtual bool isOpaque() const = 0;
+    virtual int frames() const = 0;
+    virtual int frameDuration(doc::frame_t frame) const = 0;
+
+    virtual const doc::Palette* palette(doc::frame_t frame) const = 0;
+    virtual doc::PalettesList palettes() const = 0;
+
+    // Returns the whole image to be saved (for encoders that needs
+    // all the rows at once).
+    virtual const doc::ImageRef getScaledImage() const = 0;
+
+    // In case that the file format can encode scanline by scanline
+    // (e.g. PNG format) we can request each row to encode (without
+    // the need to call getScaledImage()). Each scanline depends on
+    // the spec() width.
+    virtual const uint8_t* getScanline(int y) const = 0;
+
+    // In case that the encoder supports animation and needs to render
+    // a full frame renders.
+    virtual void renderFrame(const doc::frame_t frame,
+                             const gfx::Rect& frameBounds,
+                             doc::Image* dst) const = 0;
   };
 
   // Structure to load & save files.
@@ -113,11 +163,14 @@ namespace app {
                                                const std::string& filenameFormat,
                                                const bool ignoreEmptyFrames);
 
+    static bool checkIfFormatSupportResizeOnTheFly(const std::string& filename);
+
     ~FileOp();
 
     bool isSequence() const { return !m_seq.filename_list.empty(); }
     bool isOneFrame() const { return m_oneframe; }
     bool preserveColorProfile() const { return m_config.preserveColorProfile; }
+    const FileFormat* fileFormat() const { return m_format; }
 
     const std::string& filename() const { return m_filename; }
     const base::paths& filenames() const { return m_seq.filename_list; }
@@ -131,6 +184,7 @@ namespace app {
 
     const FileOpROI& roi() const { return m_roi; }
 
+    // Creates a new document with the given sprite.
     void createDocument(Sprite* spr);
     void operate(IFileOpProgress* progress = nullptr);
 
@@ -189,8 +243,8 @@ namespace app {
     void sequenceGetColor(int index, int* r, int* g, int* b) const;
     void sequenceSetAlpha(int index, int a);
     void sequenceGetAlpha(int index, int* a) const;
-    Image* sequenceImage(PixelFormat pixelFormat, int w, int h);
-    const Image* sequenceImage() const { return m_seq.image.get(); }
+    ImageRef sequenceImageToLoad(PixelFormat pixelFormat, int w, int h);
+    const ImageRef sequenceImageToSave() const { return m_seq.image; }
     const Palette* sequenceGetPalette() const { return m_seq.palette; }
     bool sequenceGetHasAlpha() const {
       return m_seq.has_alpha;
@@ -202,9 +256,20 @@ namespace app {
       return m_seq.flags;
     }
 
+    // Can be used to encode sequences/static files (e.g. png files)
+    // or animations (e.g. gif) resizing the result on the fly. This
+    // function is called for each frame to be saved for sequence-like
+    // files, or just once to encode animation formats.
+    // The file format needs the FILE_ENCODE_ABSTRACT_IMAGE flag to
+    // use this.
+    FileAbstractImage* abstractImageToSave();
+    void setOnTheFlyScale(const gfx::PointF& scale);
+
     const std::string& error() const { return m_error; }
     void setError(const char *error, ...);
     bool hasError() const { return !m_error.empty(); }
+    void setIncompatibilityError(const std::string& msg);
+    bool hasIncompatibilityError() const { return !m_incompatibilityError.empty(); }
 
     double progress() const;
     void setProgress(double progress);
@@ -218,6 +283,7 @@ namespace app {
     bool hasEmbeddedGridBounds() const { return m_embeddedGridBounds; }
 
     bool newBlend() const { return m_config.newBlend; }
+    const FileOpConfig& config() const { return m_config; }
 
   private:
     FileOp();                   // Undefined
@@ -236,10 +302,11 @@ namespace app {
     FileOpROI m_roi;
 
     // Shared fields between threads.
-    mutable base::mutex m_mutex; // Mutex to access to the next two fields.
+    mutable std::mutex m_mutex; // Mutex to access to the next two fields.
     double m_progress;          // Progress (1.0 is ready).
     IFileOpProgress* m_progressInterface;
     std::string m_error;        // Error string.
+    std::string m_incompatibilityError; // Incompatibility error string.
     bool m_done;                // True if the operation finished.
     bool m_stop;                // Force the break of the operation.
     bool m_oneframe;            // Load just one frame (in formats
@@ -272,11 +339,17 @@ namespace app {
       bool has_alpha;
       LayerImage* layer;
       Cel* last_cel;
+      int duration;
       // Flags after the user choose what to do with the sequence.
       int flags;
     } m_seq;
 
+    class FileAbstractImageImpl;
+    std::unique_ptr<FileAbstractImageImpl> m_abstractImage;
+
     void prepareForSequence();
+    void makeAbstractImage();
+    void makeDirectories();
   };
 
   // Available extensions for each load/save operation.
@@ -291,6 +364,9 @@ namespace app {
   // can be used to save only static images (i.e. animations are saved
   // as sequence of files).
   bool is_static_image_format(const std::string& filename);
+
+  // Returns true if the given file format supports palette/s
+  bool format_supports_palette(const std::string& filename);
 
 } // namespace app
 

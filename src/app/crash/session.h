@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -35,10 +35,11 @@ namespace crash {
       std::string description(const bool withFullPath) const;
     private:
       std::string m_dir;
-      std::string m_desc;
-      std::string m_fn;
+      mutable std::string m_desc;
+      mutable std::string m_fn;
     };
-    typedef std::vector<Backup*> Backups;
+    using BackupPtr = std::shared_ptr<Backup>;
+    using Backups = std::vector<BackupPtr>;
 
     Session(RecoveryConfig* config,
             const std::string& path);
@@ -60,13 +61,13 @@ namespace crash {
     bool saveDocumentChanges(Doc* doc);
     void removeDocument(Doc* doc);
 
-    Doc* restoreBackupDoc(Backup* backup,
+    Doc* restoreBackupDoc(const BackupPtr& backup,
                           base::task_token* t);
     Doc* restoreBackupById(const doc::ObjectId id, base::task_token* t);
     Doc* restoreBackupDocById(const doc::ObjectId id, base::task_token* t);
-    Doc* restoreBackupRawImages(Backup* backup,
+    Doc* restoreBackupRawImages(const BackupPtr& backup,
                                 const RawImagesAs as, base::task_token* t);
-    void deleteBackup(Backup* backup);
+    void deleteBackup(const BackupPtr& backup);
 
   private:
     Doc* restoreBackupDoc(const std::string& backupDir,
@@ -77,6 +78,7 @@ namespace crash {
     void markDocumentAsCorrectlyClosed(Doc* doc);
     void deleteDirectory(const std::string& dir);
     void fixFilename(Doc* doc);
+    int filenamePartToInt(const std::string& part) const;
 
     base::pid m_pid;
     std::string m_path;

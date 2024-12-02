@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,7 +14,6 @@
 #include "app/file/format_options.h"
 #include "app/transformation.h"
 #include "base/disable_copying.h"
-#include "base/mutex.h"
 #include "base/rw_lock.h"
 #include "doc/blend_mode.h"
 #include "doc/color.h"
@@ -33,8 +32,10 @@
 namespace doc {
   class Cel;
   class Layer;
+  class LayerTilemap;
   class Mask;
   class Sprite;
+  class Tileset;
 }
 
 namespace gfx {
@@ -64,8 +65,11 @@ namespace app {
       kMaskVisible      = 2, // The mask wasn't hidden by the user
       kInhibitBackup    = 4, // Inhibit the backup process
       kFullyBackedUp    = 8, // Full backup was done
+      kReadOnly         = 16,// This document is read-only
     };
   public:
+    using LockResult = base::RWLock::LockResult;
+
     Doc(Sprite* sprite);
     ~Doc();
 
@@ -74,11 +78,11 @@ namespace app {
 
     // Lock/unlock API (RWLock wrapper)
     bool canWriteLockFromRead() const;
-    bool readLock(int timeout);
-    bool writeLock(int timeout);
-    bool upgradeToWrite(int timeout);
-    void downgradeToRead();
-    void unlock();
+    LockResult readLock(int timeout);
+    LockResult writeLock(int timeout);
+    LockResult upgradeToWrite(int timeout);
+    void downgradeToRead(LockResult lockResult);
+    void unlock(LockResult lockResult);
 
     bool weakLock(std::atomic<base::RWLock::WeakLock>* weak_lock_flag);
     void weakUnlock();
@@ -96,10 +100,20 @@ namespace app {
     const DocUndo* undoHistory() const { return m_undo.get(); }
     DocUndo* undoHistory() { return m_undo.get(); }
 
+    bool isUndoing() const;
+
     color_t bgColor() const;
     color_t bgColor(Layer* layer) const;
 
     os::ColorSpaceRef osColorSpace() const { return m_osColorSpace; }
+
+    //////////////////////////////////////////////////////////////////////
+    // Modifications with notifications
+
+    // Use this function to change the layer visibility and notify all
+    // DocObservers about this change (e.g. so the Editor can be
+    // invalidated/redrawn, MovingPixelsState can drop pixels, etc.)
+    void setLayerVisibilityWithNotifications(Layer* layer, const bool visible);
 
     //////////////////////////////////////////////////////////////////////
     // Notifications
@@ -110,10 +124,15 @@ namespace app {
     void notifySpritePixelsModified(Sprite* sprite, const gfx::Region& region, frame_t frame);
     void notifyExposeSpritePixels(Sprite* sprite, const gfx::Region& region);
     void notifyLayerMergedDown(Layer* srcLayer, Layer* targetLayer);
+    void notifyBeforeLayerVisibilityChange(Layer* layer, bool newState);
+    void notifyAfterLayerVisibilityChange(Layer* layer);
     void notifyCelMoved(Layer* fromLayer, frame_t fromFrame, Layer* toLayer, frame_t toFrame);
     void notifyCelCopied(Layer* fromLayer, frame_t fromFrame, Layer* toLayer, frame_t toFrame);
     void notifySelectionChanged();
     void notifySelectionBoundariesChanged();
+    void notifyTilesetChanged(Tileset* tileset);
+    void notifyLayerGroupCollapseChange(Layer* layer);
+    void notifyAfterAddTile(LayerTilemap* layer, frame_t frame, tile_index ti);
 
     //////////////////////////////////////////////////////////////////////
     // File related properties
@@ -141,6 +160,17 @@ namespace app {
 
     void markAsBackedUp();
     bool isFullyBackedUp() const;
+
+    // TODO This read-only flag might be confusing because it
+    //      indicates that the file was loaded from an incompatible
+    //      version (future unknown feature) and it's preferable to
+    //      mark the sprite as read-only to avoid overwriting unknown
+    //      data. If in the future we want to add the possibility to
+    //      mark a regular file as read-only, this flag'll need a new
+    //      name.
+    void markAsReadOnly();
+    bool isReadOnly() const;
+    void removeReadOnlyMark();
 
     //////////////////////////////////////////////////////////////////////
     // Loaded options from file

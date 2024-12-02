@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2023  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -41,7 +41,7 @@ private:
 
 Notifications::Notifications()
   : Button("")
-  , m_flagStyle(skin::SkinTheme::instance()->styles.flag())
+  , m_flagStyle(skin::SkinTheme::get(this)->styles.flag())
   , m_red(false)
 {
 }
@@ -62,7 +62,7 @@ void Notifications::onPaint(PaintEvent& ev)
   Graphics* g = ev.graphics();
 
   PaintWidgetPartInfo info;
-  if (hasMouseOver()) info.styleFlags |= ui::Style::Layer::kMouse;
+  if (hasMouse()) info.styleFlags |= ui::Style::Layer::kMouse;
   if (m_red) info.styleFlags |= ui::Style::Layer::kFocus;
   if (isSelected()) info.styleFlags |= ui::Style::Layer::kSelected;
 
@@ -70,15 +70,17 @@ void Notifications::onPaint(PaintEvent& ev)
     g, m_flagStyle, clientBounds(), info);
 }
 
-void Notifications::onClick(ui::Event& ev)
+void Notifications::onClick()
 {
   m_red = false;
   invalidate();
 
   gfx::Rect bounds = this->bounds();
-  m_popup.showPopup(gfx::Point(
+  m_popup.showPopup(
+    gfx::Point(
       bounds.x - m_popup.sizeHint().w,
-      bounds.y + bounds.h));
+      bounds.y2()),
+    display());
 }
 
 } // namespace app

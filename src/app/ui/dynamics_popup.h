@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2023  Igara Studio S.A.
 //
 // This program is distributed under the terms of
 // the End-User License Agreement for Aseprite.
@@ -8,6 +8,7 @@
 #define APP_UI_DYNAMICS_POPUP_H_INCLUDED
 #pragma once
 
+#include "app/pref/preferences.h"
 #include "app/tools/dynamics.h"
 #include "app/tools/velocity.h"
 #include "app/ui/button_set.h"
@@ -31,10 +32,17 @@ namespace app {
       virtual doc::BrushRef getActiveBrush() = 0;
       virtual void setMaxSize(int size) = 0;
       virtual void setMaxAngle(int angle) = 0;
+      virtual void onDynamicsChange(const tools::DynamicsOptions& dynamicsOptions) = 0;
     };
     DynamicsPopup(Delegate* delegate);
 
     tools::DynamicsOptions getDynamics() const;
+    void setOptionsGridVisibility(bool state);
+    void loadDynamicsPref(bool sameInAllTools);
+    void saveDynamicsPref(bool sameInAllTools);
+    std::string ditheringMatrixName() const;
+    void refreshVisibility();
+    bool sharedSettings() const;
 
   private:
     class ThresholdSlider;
@@ -48,6 +56,10 @@ namespace app {
 
     Delegate* m_delegate;
     gen::Dynamics* m_dynamics;
+    // Used to memorize the 'stabilizer factor' slider value.
+    // This helps to save the 'stabilizer factor' even if
+    // 'stabilizer' check isn't selected.
+    int m_stabilizerFactorBackup;
     DitheringSelector* m_ditheringSel;
     gfx::Region m_hotRegion;
     ThresholdSlider* m_pressureThreshold;

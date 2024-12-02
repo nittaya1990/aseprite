@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,11 +13,11 @@
 
 #include "app/app.h"
 #include "app/app_menus.h"
+#include "app/commands/command.h"
 #include "app/commands/commands.h"
 #include "app/crash/data_recovery.h"
 #include "app/i18n/strings.h"
 #include "app/ini_file.h"
-#include "app/modules/editors.h"
 #include "app/notification_delegate.h"
 #include "app/pref/preferences.h"
 #include "app/ui/browser_view.h"
@@ -40,7 +40,6 @@
 #include "app/ui_context.h"
 #include "base/fs.h"
 #include "os/system.h"
-#include "os/window.h"
 #include "ui/message.h"
 #include "ui/splitter.h"
 #include "ui/system.h"
@@ -78,7 +77,8 @@ public:
     ui::set_theme(ui::get_theme(), newUIScale);
 
     Manager::getDefault()
-      ->updateAllDisplaysWithNewScale(newScreenScale);
+      ->updateAllDisplays(newScreenScale,
+                          pref.general.gpuAcceleration());
   }
 };
 
@@ -90,6 +90,18 @@ MainWindow::MainWindow()
 #ifdef ENABLE_SCRIPTING
   , m_devConsoleView(nullptr)
 #endif
+{
+}
+
+// This 'initialize' function is a way to split the creation of the
+// MainWindow. First a minimal instance of MainWindow is created, then
+// all UI components that can trigger the Console to report any
+// unexpected errors/warnings in the initialization. Prior to this,
+// Aseprite could fail in the same constructor, and the Console didn't
+// have access to the App::instance()->mainWindow() pointer.
+//
+// Refer to https://github.com/aseprite/aseprite/issues/3914
+void MainWindow::initialize()
 {
   m_tooltipManager = new TooltipManager();
   m_menuBar = new MainMenuBar();
@@ -105,13 +117,13 @@ MainWindow::MainWindow()
 
   m_notifications = new Notifications();
   m_statusBar = new StatusBar(m_tooltipManager);
-  m_colorBar = new ColorBar(colorBarPlaceholder()->align(),
-                            m_tooltipManager);
-  m_contextBar = new ContextBar(m_tooltipManager, m_colorBar);
   m_toolBar = new ToolBar();
   m_tabsBar = new WorkspaceTabs(this);
   m_workspace = new Workspace();
   m_previewEditor = new PreviewEditorWindow();
+  m_colorBar = new ColorBar(colorBarPlaceholder()->align(),
+                            m_tooltipManager);
+  m_contextBar = new ContextBar(m_tooltipManager, m_colorBar);
 
   // The timeline (AniControls) tooltips will use the keyboard
   // shortcuts loaded above.
@@ -160,12 +172,7 @@ MainWindow::MainWindow()
 
   // When the language is change, we reload the menu bar strings and
   // relayout the whole main window.
-  Strings::instance()->LanguageChange.connect(
-    [this]{
-      m_menuBar->reload();
-      layout();
-      invalidate();
-    });
+  Strings::instance()->LanguageChange.connect([this] { onLanguageChange(); });
 }
 
 MainWindow::~MainWindow()
@@ -174,34 +181,45 @@ MainWindow::~MainWindow()
 
 #ifdef ENABLE_SCRIPTING
   if (m_devConsoleView) {
-    if (m_devConsoleView->parent())
+    if (m_devConsoleView->parent() && m_workspace)
       m_workspace->removeView(m_devConsoleView);
     delete m_devConsoleView;
   }
 #endif
 
   if (m_browserView) {
-    if (m_browserView->parent())
+    if (m_browserView->parent() && m_workspace)
       m_workspace->removeView(m_browserView);
     delete m_browserView;
   }
 
   if (m_homeView) {
-    if (m_homeView->parent())
+    if (m_homeView->parent() && m_workspace)
       m_workspace->removeView(m_homeView);
     delete m_homeView;
   }
-  delete m_contextBar;
-  delete m_previewEditor;
+  if (m_contextBar)
+    delete m_contextBar;
+  if (m_previewEditor)
+    delete m_previewEditor;
 
   // Destroy the workspace first so ~Editor can dettach slots from
   // ColorBar. TODO this is a terrible hack for slot/signal stuff,
   // connections should be handle in a better/safer way.
-  delete m_workspace;
+  if (m_workspace)
+    delete m_workspace;
 
   // Remove the root-menu from the menu-bar (because the rootmenu
   // module should destroy it).
-  m_menuBar->setMenu(NULL);
+  if (m_menuBar)
+    m_menuBar->setMenu(NULL);
+}
+
+void MainWindow::onLanguageChange()
+{
+  m_menuBar->reload();
+  layout();
+  invalidate();
 }
 
 DocView* MainWindow::getDocView()
@@ -376,13 +394,22 @@ void MainWindow::onResize(ui::ResizeEvent& ev)
 {
   app::gen::MainWindow::onResize(ev);
 
-  os::Window* display = manager()->display();
-  if ((display) &&
-      (display->scale()*ui::guiscale() > 2) &&
-      (!m_scalePanic) &&
-      (ui::display_w()/ui::guiscale() < 320 ||
-       ui::display_h()/ui::guiscale() < 260)) {
-    showNotification(m_scalePanic = new ScreenScalePanic);
+  os::Window* nativeWindow = (display() ? display()->nativeWindow(): nullptr);
+  if (nativeWindow && nativeWindow->screen()) {
+    const int scale = nativeWindow->scale()*ui::guiscale();
+
+    // We can check for the available workarea to know that the user
+    // can resize the window to its full size and there will be enough
+    // room to display some common dialogs like (for example) the
+    // Preferences dialog.
+    if ((scale > 2) &&
+        (!m_scalePanic)) {
+      const gfx::Size wa = nativeWindow->screen()->workarea().size();
+      if ((wa.w / scale < 256 ||
+           wa.h / scale < 256)) {
+        showNotification(m_scalePanic = new ScreenScalePanic);
+      }
+    }
   }
 }
 
@@ -391,12 +418,20 @@ void MainWindow::onResize(ui::ResizeEvent& ev)
 // inform to the UIContext that the current view has changed.
 void MainWindow::onActiveViewChange()
 {
+  // First we have to configure the MainWindow layout (e.g. show
+  // Timeline if needed) as UIContext::setActiveView() will configure
+  // several widgets (calling updateUsingEditor() functions) using the
+  // active document, and we need to know the available space on
+  // screen for each widget (e.g. the Timeline will configure its
+  // scrollable area/position depending on the number of
+  // layers/frames, but it needs to know its position on screen
+  // first).
+  configureWorkspaceLayout();
+
   if (DocView* docView = getDocView())
     UIContext::instance()->setActiveView(docView);
   else
     UIContext::instance()->setActiveView(nullptr);
-
-  configureWorkspaceLayout();
 }
 
 bool MainWindow::isTabModified(Tabs* tabs, TabView* tabView)
@@ -502,9 +537,13 @@ void MainWindow::onMouseLeaveTab()
   m_statusBar->showDefaultText();
 }
 
-DropViewPreviewResult MainWindow::onFloatingTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos)
+DropViewPreviewResult MainWindow::onFloatingTab(
+  Tabs* tabs,
+  TabView* tabView,
+  const gfx::Point& screenPos)
 {
-  return m_workspace->setDropViewPreview(pos,
+  return m_workspace->setDropViewPreview(
+    screenPos,
     dynamic_cast<WorkspaceView*>(tabView),
     static_cast<WorkspaceTabs*>(tabs));
 }
@@ -514,12 +553,17 @@ void MainWindow::onDockingTab(Tabs* tabs, TabView* tabView)
   m_workspace->removeDropViewPreview();
 }
 
-DropTabResult MainWindow::onDropTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos, bool clone)
+DropTabResult MainWindow::onDropTab(Tabs* tabs,
+                                    TabView* tabView,
+                                    const gfx::Point& screenPos,
+                                    const bool clone)
 {
   m_workspace->removeDropViewPreview();
 
   DropViewAtResult result =
-    m_workspace->dropViewAt(pos, dynamic_cast<WorkspaceView*>(tabView), clone);
+    m_workspace->dropViewAt(screenPos,
+                            dynamic_cast<WorkspaceView*>(tabView),
+                            clone);
 
   if (result == DropViewAtResult::MOVED_TO_OTHER_PANEL)
     return DropTabResult::REMOVE;
@@ -537,12 +581,10 @@ void MainWindow::configureWorkspaceLayout()
 
   if (os::instance()->menus() == nullptr ||
       pref.general.showMenuBar()) {
-    if (!m_menuBar->parent())
-      menuBarPlaceholder()->insertChild(0, m_menuBar);
+    m_menuBar->resetMaxSize();
   }
   else {
-    if (m_menuBar->parent())
-      menuBarPlaceholder()->removeChild(m_menuBar);
+    m_menuBar->setMaxSize(gfx::Size(0, 0));
   }
 
   m_menuBar->setVisible(normal);

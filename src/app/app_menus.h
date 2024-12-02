@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -20,8 +20,10 @@
 
 #include <memory>
 
-class TiXmlElement;
-class TiXmlHandle;
+namespace tinyxml2 {
+  class XMLElement;
+  class XMLHandle;
+}
 
 namespace app {
   class Command;
@@ -54,14 +56,19 @@ namespace app {
     Menu* getSlicePopupMenu() { return m_slicePopupMenu.get(); }
     Menu* getPalettePopupMenu() { return m_palettePopupMenu.get(); }
     Menu* getInkPopupMenu() { return m_inkPopupMenu.get(); }
+    Menu* getAnimationMenu();
+    Menu* getNewFrameMenu() { return m_newFramePopupMenu.get();  }
 
     void applyShortcutToMenuitemsWithCommand(Command* command, const Params& params,
                                              const KeyPtr& key);
     void syncNativeMenuItemKeyShortcuts();
 
     // Menu item handling in groups
+    void addMenuGroup(const std::string& groupId,
+                      MenuItem* menuItem);
+    void removeMenuGroup(const std::string& groupId);
     void addMenuItemIntoGroup(const std::string& groupId,
-                              std::unique_ptr<MenuItem>&& menuItem);
+                              std::unique_ptr<Widget>&& menuItem);
     void removeMenuItemFromGroup(Command* cmd);
     void removeMenuItemFromGroup(Widget* menuItem);
 
@@ -69,9 +76,9 @@ namespace app {
     template<typename Pred>
     void removeMenuItemFromGroup(Pred pred);
 
-    Menu* loadMenuById(TiXmlHandle& handle, const char *id);
-    Menu* convertXmlelemToMenu(TiXmlElement* elem);
-    Widget* convertXmlelemToMenuitem(TiXmlElement* elem);
+    Menu* loadMenuById(tinyxml2::XMLHandle& handle, const char *id);
+    Menu* convertXmlelemToMenu(tinyxml2::XMLElement* elem);
+    Widget* convertXmlelemToMenuitem(tinyxml2::XMLElement* elem, Menu* menu);
     void applyShortcutToMenuitemsWithCommand(Menu* menu, Command* command, const Params& params,
                                              const KeyPtr& key);
     void syncNativeMenuItemKeyShortcuts(Menu* menu);
@@ -87,6 +94,7 @@ namespace app {
 #endif
 
     struct GroupInfo {
+      Menu* menu = nullptr;
       Widget* end = nullptr;
       WidgetsList items;
     };
@@ -104,6 +112,7 @@ namespace app {
     std::unique_ptr<Menu> m_slicePopupMenu;
     std::unique_ptr<Menu> m_palettePopupMenu;
     std::unique_ptr<Menu> m_inkPopupMenu;
+    std::unique_ptr<Menu> m_newFramePopupMenu;
     obs::scoped_connection m_recentFilesConn;
     std::vector<Menu*> m_menus;
     // List of recent menu items pointing to recent files.

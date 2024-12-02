@@ -1,4 +1,5 @@
 // Aseprite UI Library
+// Copyright (C) 2022  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -11,6 +12,8 @@
 #include "ui/entry.h"
 #include "ui/slider.h"
 
+#include <memory>
+
 namespace ui {
 
   class CloseEvent;
@@ -19,32 +22,33 @@ namespace ui {
   class IntEntry : public Entry {
   public:
     IntEntry(int min, int max, SliderDelegate* sliderDelegate = nullptr);
-    ~IntEntry();
+    virtual ~IntEntry();
 
-    int getValue() const;
-    void setValue(int value);
+    virtual int getValue() const;
+    virtual void setValue(int value);
 
   protected:
     bool onProcessMessage(Message* msg) override;
     void onInitTheme(InitThemeEvent& ev) override;
     void onSizeHint(SizeHintEvent& ev) override;
     void onChange() override;
+    virtual void onChangeSlider();
 
     // New events
     virtual void onValueChange();
 
+    int m_min;
+    int m_max;
+    std::unique_ptr<PopupWindow> m_popupWindow;
+    bool m_changeFromSlider;
+    std::unique_ptr<Slider> m_slider;
+
   private:
     void openPopup();
     void closePopup();
-    void onChangeSlider();
     void onPopupClose(CloseEvent& ev);
     void removeSlider();
 
-    int m_min;
-    int m_max;
-    Slider m_slider;
-    PopupWindow* m_popupWindow;
-    bool m_changeFromSlider;
   };
 
 } // namespace ui

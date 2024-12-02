@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -23,10 +23,11 @@
 #include "app/file/format_options.h"
 #include "app/flatten.h"
 #include "app/pref/preferences.h"
-#include "app/util/create_cel_copy.h"
+#include "app/util/cel_ops.h"
 #include "base/memory.h"
 #include "doc/cel.h"
 #include "doc/layer.h"
+#include "doc/layer_tilemap.h"
 #include "doc/mask.h"
 #include "doc/mask_boundaries.h"
 #include "doc/palette.h"
@@ -40,7 +41,7 @@
 #include <limits>
 #include <map>
 
-#define DOC_TRACE(...) // TRACEARGS
+#define DOC_TRACE(...) // TRACEARGS(__VA_ARGS__)
 
 namespace app {
 
@@ -101,38 +102,50 @@ bool Doc::canWriteLockFromRead() const
   return m_rwLock.canWriteLockFromRead();
 }
 
-bool Doc::readLock(int timeout)
+Doc::LockResult Doc::readLock(int timeout)
 {
-  return m_rwLock.lock(base::RWLock::ReadLock, timeout);
+  auto res = m_rwLock.lock(base::RWLock::ReadLock, timeout);
+  DOC_TRACE("DOC: readLock", this, (int)res);
+  return res;
 }
 
-bool Doc::writeLock(int timeout)
+Doc::LockResult Doc::writeLock(int timeout)
 {
-  return m_rwLock.lock(base::RWLock::WriteLock, timeout);
+  auto res = m_rwLock.lock(base::RWLock::WriteLock, timeout);
+  DOC_TRACE("DOC: writeLock", this, (int)res);
+  return res;
 }
 
-bool Doc::upgradeToWrite(int timeout)
+Doc::LockResult Doc::upgradeToWrite(int timeout)
 {
-  return m_rwLock.upgradeToWrite(timeout);
+  auto res = m_rwLock.upgradeToWrite(timeout);
+  DOC_TRACE("DOC: upgradeToWrite", this, (int)res);
+  return res;
 }
 
-void Doc::downgradeToRead()
+void Doc::downgradeToRead(LockResult lockResult)
 {
-  m_rwLock.downgradeToRead();
+  DOC_TRACE("DOC: downgradeToRead", this, (int)lockResult);
+  m_rwLock.downgradeToRead(lockResult);
 }
 
-void Doc::unlock()
+void Doc::unlock(LockResult lockResult)
 {
-  m_rwLock.unlock();
+  ASSERT(lockResult != base::RWLock::LockResult::Fail);
+  DOC_TRACE("DOC: unlock", this, (int)lockResult);
+  m_rwLock.unlock(lockResult);
 }
 
 bool Doc::weakLock(std::atomic<base::RWLock::WeakLock>* weak_lock_flag)
 {
-  return m_rwLock.weakLock(weak_lock_flag);
+  bool res = m_rwLock.weakLock(weak_lock_flag);
+  DOC_TRACE("DOC: weakLock", this, (int)res);
+  return res;
 }
 
 void Doc::weakUnlock()
 {
+  DOC_TRACE("DOC: weakUnlock", this);
   m_rwLock.weakUnlock();
 }
 
@@ -156,6 +169,11 @@ DocApi Doc::getApi(Transaction& transaction)
 //////////////////////////////////////////////////////////////////////
 // Main properties
 
+bool Doc::isUndoing() const
+{
+  return m_undo->isUndoing();
+}
+
 color_t Doc::bgColor() const
 {
   return color_utils::color_for_target(
@@ -173,6 +191,16 @@ color_t Doc::bgColor(Layer* layer) const
       layer);
   else
     return layer->sprite()->transparentColor();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Modifications with notifications
+
+void Doc::setLayerVisibilityWithNotifications(Layer* layer, const bool visible)
+{
+  notifyBeforeLayerVisibilityChange(layer, visible);
+  layer->setVisible(visible);
+  notifyAfterLayerVisibilityChange(layer);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -226,6 +254,20 @@ void Doc::notifyLayerMergedDown(Layer* srcLayer, Layer* targetLayer)
   notify_observers<DocEvent&>(&DocObserver::onLayerMergedDown, ev);
 }
 
+void Doc::notifyBeforeLayerVisibilityChange(Layer* layer, bool newState)
+{
+  DocEvent ev(this);
+  ev.layer(layer);
+  notify_observers<DocEvent&, bool>(&DocObserver::onBeforeLayerVisibilityChange, ev, newState);
+}
+
+void Doc::notifyAfterLayerVisibilityChange(Layer* layer)
+{
+  DocEvent ev(this);
+  ev.layer(layer);
+  notify_observers<DocEvent&>(&DocObserver::onAfterLayerVisibilityChange, ev);
+}
+
 void Doc::notifyCelMoved(Layer* fromLayer, frame_t fromFrame, Layer* toLayer, frame_t toFrame)
 {
   DocEvent ev(this);
@@ -260,9 +302,34 @@ void Doc::notifySelectionBoundariesChanged()
   notify_observers<DocEvent&>(&DocObserver::onSelectionBoundariesChanged, ev);
 }
 
+void Doc::notifyTilesetChanged(Tileset* tileset)
+{
+  DocEvent ev(this);
+  ev.tileset(tileset);
+  notify_observers<DocEvent&>(&DocObserver::onTilesetChanged, ev);
+}
+
+void Doc::notifyLayerGroupCollapseChange(Layer* layer)
+{
+  DocEvent ev(this);
+  ev.layer(layer);
+  notify_observers<DocEvent&>(&DocObserver::onLayerCollapsedChanged, ev);
+}
+
+void Doc::notifyAfterAddTile(LayerTilemap* layer, frame_t frame, tile_index ti)
+{
+  DocEvent ev(this);
+  ev.sprite(layer->sprite());
+  ev.layer(layer);
+  ev.frame(frame);
+  ev.tileset(layer->tileset());
+  ev.tileIndex(ti);
+  notify_observers<DocEvent&>(&DocObserver::onAfterAddTile, ev);
+}
+
 bool Doc::isModified() const
 {
-  return !m_undo->isSavedState();
+  return !m_undo->isInSavedStateOrSimilar();
 }
 
 bool Doc::isAssociatedToFile() const
@@ -272,8 +339,8 @@ bool Doc::isAssociatedToFile() const
 
 void Doc::markAsSaved()
 {
-  m_undo->markSavedState();
   m_flags |= kAssociatedToFile;
+  m_undo->markSavedState();
 }
 
 void Doc::impossibleToBackToSavedState()
@@ -311,6 +378,25 @@ void Doc::markAsBackedUp()
 bool Doc::isFullyBackedUp() const
 {
   return (m_flags & kFullyBackedUp ? true: false);
+}
+
+void Doc::markAsReadOnly()
+{
+  DOC_TRACE("DOC: Mark as read-only", this);
+
+  m_flags |= kReadOnly;
+}
+
+bool Doc::isReadOnly() const
+{
+  return (m_flags & kReadOnly ? true: false);
+}
+
+void Doc::removeReadOnlyMark()
+{
+  DOC_TRACE("DOC: Read-only mark removed", this);
+
+  m_flags &= ~kReadOnly;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -396,7 +482,7 @@ void Doc::setTransformation(const Transformation& transform)
 
 void Doc::resetTransformation()
 {
-  m_transformation = Transformation(gfx::RectF(m_mask->bounds()));
+  m_transformation = Transformation(gfx::RectF(m_mask->bounds()), m_transformation.cornerThick());
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -442,9 +528,11 @@ void Doc::copyLayerContent(const Layer* sourceLayer0, Doc* destDoc, Layer* destL
       if (it != linked.end()) {
         newCel.reset(Cel::MakeLink(sourceCel->frame(),
                                    it->second));
+        newCel->copyNonsharedPropertiesFrom(sourceCel);
       }
       else {
-        newCel.reset(create_cel_copy(sourceCel,
+        newCel.reset(create_cel_copy(nullptr, // TODO add undo information?
+                                     sourceCel,
                                      destLayer->sprite(),
                                      destLayer,
                                      sourceCel->frame()));
@@ -576,6 +664,13 @@ Doc* Doc::duplicate(DuplicateType type) const
 
 void Doc::close()
 {
+  try {
+    notify_observers<Doc*>(&DocObserver::onCloseDocument, this);
+  }
+  catch (...) {
+    LOG(ERROR, "DOC: Exception on DocObserver::onCloseDocument()\n");
+  }
+
   removeFromContext();
 }
 

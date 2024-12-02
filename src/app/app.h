@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,10 +9,7 @@
 #define APP_APP_H_INCLUDED
 #pragma once
 
-#ifdef ENABLE_UI
 #include "app/app_brushes.h"
-#endif
-
 #include "base/paths.h"
 #include "doc/pixel_format.h"
 #include "obs/signal.h"
@@ -86,6 +83,7 @@ namespace app {
     // scripts.
     int initialize(const AppOptions& options);
     void run();
+    void close();
 
     AppMod* mod() const { return m_mod; }
     tools::ToolBox* toolBox() const;
@@ -100,7 +98,6 @@ namespace app {
     Extensions& extensions() const;
     crash::DataRecovery* dataRecovery() const;
 
-#ifdef ENABLE_UI
     AppBrushes& brushes() {
       ASSERT(m_brushes.get());
       return *m_brushes;
@@ -111,7 +108,6 @@ namespace app {
     void updateDisplayTitleBar();
 
     InputChain& inputChain();
-#endif
 
 #ifdef ENABLE_SCRIPTING
     script::Engine* scriptEngine() { return m_engine.get(); }
@@ -122,6 +118,7 @@ namespace app {
 
     // App Signals
     obs::signal<void()> Exit;
+    obs::signal<void()> ExitGui;
     obs::signal<void()> PaletteChange;
     obs::signal<void()> ColorSpaceChange;
     obs::signal<void()> PalettePresetsChange;
@@ -135,17 +132,18 @@ namespace app {
 
     AppMod* m_mod;
     std::unique_ptr<ui::UISystem> m_uiSystem;
-    CoreModules* m_coreModules;
-    Modules* m_modules;
-    LegacyModules* m_legacy;
+    std::unique_ptr<CoreModules> m_coreModules;
+    std::unique_ptr<Modules> m_modules;
+    std::unique_ptr<LegacyModules> m_legacy;
     bool m_isGui;
     bool m_isShell;
+#ifdef ENABLE_STEAM
+    bool m_inAppSteam = true;
+#endif
     std::unique_ptr<MainWindow> m_mainWindow;
     base::paths m_files;
-#ifdef ENABLE_UI
     std::unique_ptr<AppBrushes> m_brushes;
-    BackupIndicator* m_backupIndicator;
-#endif // ENABLE_UI
+    std::unique_ptr<BackupIndicator> m_backupIndicator;
 #ifdef ENABLE_SCRIPTING
     std::unique_ptr<script::Engine> m_engine;
 #endif
@@ -159,6 +157,7 @@ namespace app {
   void app_rebuild_documents_tabs();
   PixelFormat app_get_current_pixel_format();
   int app_get_color_to_clear_layer(doc::Layer* layer);
+  void app_configure_drm();
 
 } // namespace app
 

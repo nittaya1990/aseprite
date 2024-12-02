@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 // Copyright (C) 2017  David Capello
 //
 // This program is distributed under the terms of
@@ -17,6 +17,7 @@
 #include "app/commands/new_params.h"
 #include "app/context.h"
 #include "app/ini_file.h"
+#include "app/i18n/strings.h"
 #include "app/modules/gui.h"
 #include "app/ui/color_button.h"
 #include "app/ui/color_sliders.h"
@@ -39,24 +40,26 @@ struct BrightnessContrastParams : public NewParams {
   Param<double> contrast { this, 0.0, "contrast" };
 };
 
-#ifdef ENABLE_UI
-
 static const char* ConfigSection = "BrightnessContrast";
 
 class BrightnessContrastWindow : public FilterWindow {
 public:
   BrightnessContrastWindow(BrightnessContrastFilter& filter,
                            FilterManagerImpl& filterMgr)
-    : FilterWindow("Brightness/Contrast", ConfigSection, &filterMgr,
+    : FilterWindow(Strings::brightness_contrast_title().c_str(),
+                   ConfigSection,
+                   &filterMgr,
                    WithChannelsSelector,
                    WithoutTiledCheckBox)
     , m_brightness(-100, 100, int(100.0 * filter.brightness()))
     , m_contrast(-100, 100, int(100.0 * filter.contrast()))
     , m_filter(filter)
   {
-    getContainer()->addChild(new ui::Label("Brightness:"));
+    getContainer()->addChild(
+      new ui::Label(Strings::brightness_contrast_brightness_label()));
     getContainer()->addChild(&m_brightness);
-    getContainer()->addChild(new ui::Label("Contrast:"));
+    getContainer()->addChild(
+      new ui::Label(Strings::brightness_contrast_contrast_label()));
     getContainer()->addChild(&m_contrast);
     m_brightness.Change.connect([this]{ onChange(); });
     m_contrast.Change.connect([this]{ onChange(); });
@@ -65,6 +68,7 @@ public:
 private:
 
   void onChange() {
+    stopPreview();
     m_filter.setBrightness(m_brightness.getValue() / 100.0);
     m_filter.setContrast(m_contrast.getValue() / 100.0);
     restartPreview();
@@ -74,8 +78,6 @@ private:
   Slider2 m_contrast;
   BrightnessContrastFilter& m_filter;
 };
-
-#endif  // ENABLE_UI
 
 class BrightnessContrastCommand : public CommandWithNewParams<BrightnessContrastParams> {
 public:
@@ -99,9 +101,7 @@ bool BrightnessContrastCommand::onEnabled(Context* context)
 
 void BrightnessContrastCommand::onExecute(Context* context)
 {
-#ifdef ENABLE_UI
   const bool ui = (params().ui() && context->isUIAvailable());
-#endif
 
   BrightnessContrastFilter filter;
   FilterManagerImpl filterMgr(context, &filter);
@@ -115,14 +115,11 @@ void BrightnessContrastCommand::onExecute(Context* context)
   if (params().brightness.isSet()) filter.setBrightness(params().brightness() / 100.0);
   if (params().contrast.isSet()) filter.setContrast(params().contrast() / 100.0);
 
-#ifdef ENABLE_UI
   if (ui) {
     BrightnessContrastWindow window(filter, filterMgr);
     window.doModal();
   }
-  else
-#endif // ENABLE_UI
-  {
+  else {
     start_filter_worker(&filterMgr);
   }
 }

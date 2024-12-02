@@ -32,17 +32,7 @@ Image::~Image()
 
 int Image::getMemSize() const
 {
-  return sizeof(Image) + getRowStrideSize()*height();
-}
-
-int Image::getRowStrideSize() const
-{
-  return getRowStrideSize(width());
-}
-
-int Image::getRowStrideSize(int pixels_per_row) const
-{
-  return calculate_rowstride_bytes(pixelFormat(), pixels_per_row);
+  return sizeof(Image) + rowBytes()*height();
 }
 
 // static
@@ -65,6 +55,7 @@ Image* Image::create(const ImageSpec& spec,
     case ColorMode::GRAYSCALE: return new ImageImpl<GrayscaleTraits>(spec, buffer);
     case ColorMode::INDEXED:   return new ImageImpl<IndexedTraits>(spec, buffer);
     case ColorMode::BITMAP:    return new ImageImpl<BitmapTraits>(spec, buffer);
+    case ColorMode::TILEMAP:   return new ImageImpl<TilemapTraits>(spec, buffer);
   }
   return nullptr;
 }

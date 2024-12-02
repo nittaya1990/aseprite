@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2020  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -147,6 +148,24 @@ protected:
   }
 };
 
+class ShowBrushPreviewInPreviewCommand : public Command {
+public:
+  ShowBrushPreviewInPreviewCommand()
+    : Command(CommandId::ShowBrushPreviewInPreview(), CmdUIOnlyFlag) {
+  }
+
+protected:
+  bool onChecked(Context* ctx) override {
+    DocumentPreferences& docPref = Preferences::instance().document(ctx->activeDocument());
+    return docPref.show.brushPreviewInPreview();
+  }
+
+  void onExecute(Context* ctx) override {
+    DocumentPreferences& docPref = Preferences::instance().document(ctx->activeDocument());
+    docPref.show.brushPreviewInPreview(!docPref.show.brushPreviewInPreview());
+  }
+};
+
 class ShowAutoGuidesCommand : public Command {
 public:
   ShowAutoGuidesCommand()
@@ -183,6 +202,24 @@ protected:
   }
 };
 
+class ShowTileNumbersCommand : public Command {
+public:
+  ShowTileNumbersCommand()
+    : Command(CommandId::ShowTileNumbers(), CmdUIOnlyFlag) {
+  }
+
+protected:
+  bool onChecked(Context* ctx) override {
+    DocumentPreferences& docPref = Preferences::instance().document(ctx->activeDocument());
+    return docPref.show.tileNumbers();
+  }
+
+  void onExecute(Context* ctx) override {
+    DocumentPreferences& docPref = Preferences::instance().document(ctx->activeDocument());
+    docPref.show.tileNumbers(!docPref.show.tileNumbers());
+  }
+};
+
 Command* CommandFactory::createShowExtrasCommand()
 {
   return new ShowExtrasCommand;
@@ -213,6 +250,11 @@ Command* CommandFactory::createShowBrushPreviewCommand()
   return new ShowBrushPreviewCommand;
 }
 
+Command* CommandFactory::createShowBrushPreviewInPreviewCommand()
+{
+  return new ShowBrushPreviewInPreviewCommand;
+}
+
 Command* CommandFactory::createShowAutoGuidesCommand()
 {
   return new ShowAutoGuidesCommand;
@@ -221,6 +263,11 @@ Command* CommandFactory::createShowAutoGuidesCommand()
 Command* CommandFactory::createShowSlicesCommand()
 {
   return new ShowSlicesCommand;
+}
+
+Command* CommandFactory::createShowTileNumbersCommand()
+{
+  return new ShowTileNumbersCommand;
 }
 
 } // namespace app

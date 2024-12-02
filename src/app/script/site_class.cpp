@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,6 +9,10 @@
 #include "config.h"
 #endif
 
+#include "app/app.h"
+#include "app/console.h"
+#include "app/context.h"
+#include "app/context_observer.h"
 #include "app/script/docobj.h"
 #include "app/script/engine.h"
 #include "app/script/luacpp.h"
@@ -79,6 +83,26 @@ int Site_get_image(lua_State* L)
   return 1;
 }
 
+int Site_get_tilemapMode(lua_State* L)
+{
+  auto site = get_obj<Site>(L, 1);
+  if (site)
+    lua_pushinteger(L, (int)site->tilemapMode());
+  else
+    lua_pushnil(L);
+  return 1;
+}
+
+int Site_get_tilesetMode(lua_State* L)
+{
+  auto site = get_obj<Site>(L, 1);
+  if (site)
+    lua_pushinteger(L, (int)site->tilesetMode());
+  else
+    lua_pushnil(L);
+  return 1;
+}
+
 const luaL_Reg Site_methods[] = {
   { nullptr, nullptr }
 };
@@ -90,6 +114,8 @@ const Property Site_properties[] = {
   { "frame", Site_get_frame, nullptr },
   { "frameNumber", Site_get_frameNumber, nullptr },
   { "image", Site_get_image, nullptr },
+  { "tilemapMode", Site_get_tilemapMode, nullptr },
+  { "tilesetMode", Site_get_tilesetMode, nullptr },
   { nullptr, nullptr, nullptr }
 };
 

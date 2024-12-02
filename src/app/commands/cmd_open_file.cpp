@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -18,8 +18,8 @@
 #include "app/doc.h"
 #include "app/file/file.h"
 #include "app/file_selector.h"
+#include "app/i18n/strings.h"
 #include "app/job.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/pref/preferences.h"
 #include "app/recent_files.h"
@@ -36,8 +36,8 @@ namespace app {
 
 class OpenFileJob : public Job, public IFileOpProgress {
 public:
-  OpenFileJob(FileOp* fop)
-    : Job("Loading file")
+  OpenFileJob(FileOp* fop, const bool showProgress)
+    : Job(Strings::open_file_loading(), showProgress)
     , m_fop(fop)
   {
   }
@@ -76,6 +76,7 @@ private:
 
 OpenFileCommand::OpenFileCommand()
   : Command(CommandId::OpenFile(), CmdRecordableFlag)
+  , m_ui(true)
   , m_repeatCheckbox(false)
   , m_oneFrame(false)
   , m_seqDecision(gen::SequenceDecision::ASK)
@@ -86,6 +87,12 @@ void OpenFileCommand::onLoadParams(const Params& params)
 {
   m_filename = params.get("filename");
   m_folder = params.get("folder"); // Initial folder
+
+  if (params.has_param("ui"))
+    m_ui = params.get_as<bool>("ui");
+  else
+    m_ui = true;
+
   m_repeatCheckbox = params.get_as<bool>("repeat_checkbox");
   m_oneFrame = params.get_as<bool>("oneframe");
 
@@ -113,7 +120,6 @@ void OpenFileCommand::onExecute(Context* context)
   base::paths filenames;
 
   // interactive
-#ifdef ENABLE_UI
   if (context->isUIAvailable() && m_filename.empty()) {
     base::paths exts = get_readable_extensions();
 
@@ -122,7 +128,7 @@ void OpenFileCommand::onExecute(Context* context)
     if (!m_folder.empty() && !base::is_path_separator(m_folder[m_folder.size()-1]))
       m_folder.push_back(base::path_separator);
 
-    if (!app::show_file_selector("Open", m_folder, exts,
+    if (!app::show_file_selector(Strings::open_file_title(), m_folder, exts,
                                  FileSelectorType::OpenMultiple,
                                  filenames)) {
       // The user cancelled the operation through UI
@@ -135,9 +141,7 @@ void OpenFileCommand::onExecute(Context* context)
     if (filenames.size() > 1)
       m_repeatCheckbox = true;
   }
-  else
-#endif // ENABLE_UI
-  if (!m_filename.empty()) {
+  else if (!m_filename.empty()) {
     filenames.push_back(m_filename);
   }
 
@@ -220,7 +224,7 @@ void OpenFileCommand::onExecute(Context* context)
         m_usedFiles.push_back(fn);
       }
 
-      OpenFileJob task(fop.get());
+      OpenFileJob task(fop.get(), m_ui);
       task.showProgressWindow();
 
       // Post-load processing, it is called from the GUI because may require user intervention.
@@ -263,6 +267,21 @@ void OpenFileCommand::onExecute(Context* context)
         App::instance()->recentFiles()->removeRecentFile(m_filename);
     }
   }
+}
+
+std::string OpenFileCommand::onGetFriendlyName() const
+{
+  // TO DO: would be better to show the last part of the path
+  // via text size hint instead of a fixed number of chars.
+  auto uiScale = Preferences::instance().general.uiScale();
+  auto scScale = Preferences::instance().general.screenScale();
+  int pos(68.0 / double(uiScale) / double(scScale));
+  return Command::onGetFriendlyName().append(
+    (m_filename.empty() ?
+      "" :
+      (": " + (m_filename.size() >= pos ?
+                 m_filename.substr(m_filename.size() - pos, pos) :
+                 m_filename))));
 }
 
 Command* CommandFactory::createOpenFileCommand()

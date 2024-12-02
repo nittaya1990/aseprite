@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,11 +9,12 @@
 #define APP_SCRIPT_LUACPP_H_INCLUDED
 #pragma once
 
-extern "C" {
-  #include "lua.h"
-  #include "lualib.h"
-  #include "lauxlib.h"
-}
+// We're compiling Lua with C++ support to handle error with
+// exceptions, so there is no need of extern "C" { ... } these
+// includes.
+#include "lua.h"
+#include "lualib.h"
+#include "lauxlib.h"
 
 #include "base/debug.h"
 
@@ -99,6 +100,12 @@ inline bool lua2bool(lua_State* L, int index) {
 template<typename T>
 inline void setfield_integer(lua_State* L, const char* key, const T& value) {
   lua_pushinteger(L, int(value));
+  lua_setfield(L, -2, key);
+}
+
+template<typename T>
+inline void setfield_uinteger(lua_State* L, const char* key, const T& value) {
+  lua_pushinteger(L, value);
   lua_setfield(L, -2, key);
 }
 

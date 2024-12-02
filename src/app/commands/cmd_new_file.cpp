@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -18,16 +18,12 @@
 #include "app/console.h"
 #include "app/doc.h"
 #include "app/i18n/strings.h"
-#include "app/modules/editors.h"
 #include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
-#include "app/ui/button_set.h"
 #include "app/ui/workspace.h"
 #include "app/ui_context.h"
 #include "app/util/clipboard.h"
-#include "app/util/clipboard.h"
 #include "app/util/pixel_ratio.h"
-#include "base/clamp.h"
 #include "doc/cel.h"
 #include "doc/image.h"
 #include "doc/layer.h"
@@ -72,14 +68,11 @@ NewFileCommand::NewFileCommand()
 {
 }
 
-bool NewFileCommand::onEnabled(Context* context)
+bool NewFileCommand::onEnabled(Context* ctx)
 {
   return
     (!params().fromClipboard()
-#ifdef ENABLE_UI
-     || (clipboard::get_current_format() == clipboard::ClipboardImage)
-#endif
-     );
+     || (ctx->clipboard()->format() == ClipboardFormat::Image));
 }
 
 void NewFileCommand::onExecute(Context* ctx)
@@ -89,15 +82,12 @@ void NewFileCommand::onExecute(Context* ctx)
   doc::ColorMode colorMode = params().colorMode();
   app::Color bgColor = app::Color::fromMask();
   doc::PixelRatio pixelRatio(1, 1);
-#ifdef ENABLE_UI
   doc::ImageRef clipboardImage;
   doc::Palette clipboardPalette(0, 256);
-#endif
   const int ncolors = get_default_palette()->size();
 
-#ifdef ENABLE_UI
   if (params().fromClipboard()) {
-    clipboardImage = clipboard::get_image(&clipboardPalette);
+    clipboardImage = ctx->clipboard()->getImage(&clipboardPalette);
     if (!clipboardImage)
       return;
 
@@ -128,12 +118,12 @@ void NewFileCommand::onExecute(Context* ctx)
     int w = pref.newFile.width();
     int h = pref.newFile.height();
     int bg = pref.newFile.backgroundColor();
-    bg = base::clamp(bg, 0, 2);
+    bg = std::clamp(bg, 0, 2);
 
     // If the clipboard contains an image, we can show the size of the
     // clipboard as default image size.
     gfx::Size clipboardSize;
-    if (clipboard::get_image_size(clipboardSize)) {
+    if (ctx->clipboard()->getImageSize(clipboardSize)) {
       w = clipboardSize.w;
       h = clipboardSize.h;
     }
@@ -155,13 +145,8 @@ void NewFileCommand::onExecute(Context* ctx)
     window.advancedCheck()->setSelected(advanced);
     window.advancedCheck()->Click.connect(
       [&]{
-        gfx::Rect bounds = window.bounds();
         window.advanced()->setVisible(window.advancedCheck()->isSelected());
-        window.setBounds(gfx::Rect(window.bounds().origin(),
-                                   window.sizeHint()));
-        window.layout();
-
-        window.manager()->invalidateRect(bounds);
+        window.expandWindow(window.sizeHint());
       });
     window.advanced()->setVisible(advanced);
     if (advanced)
@@ -190,10 +175,10 @@ void NewFileCommand::onExecute(Context* ctx)
     static_assert(int(ColorMode::RGB) == 0, "RGB pixel format should be 0");
     static_assert(int(ColorMode::INDEXED) == 2, "Indexed pixel format should be 2");
 
-    colorMode = base::clamp(colorMode, ColorMode::RGB, ColorMode::INDEXED);
-    w = base::clamp(w, 1, DOC_SPRITE_MAX_WIDTH);
-    h = base::clamp(h, 1, DOC_SPRITE_MAX_HEIGHT);
-    bg = base::clamp(bg, 0, 2);
+    colorMode = std::clamp(colorMode, ColorMode::RGB, ColorMode::INDEXED);
+    w = std::clamp(w, 1, DOC_SPRITE_MAX_WIDTH);
+    h = std::clamp(h, 1, DOC_SPRITE_MAX_HEIGHT);
+    bg = std::clamp(bg, 0, 2);
 
     // Select the background color
     if (bg >= 0 && bg <= 3) {
@@ -214,7 +199,6 @@ void NewFileCommand::onExecute(Context* ctx)
     width = w;
     height = h;
   }
-#endif // ENABLE_UI
 
   ASSERT(colorMode == ColorMode::RGB ||
          colorMode == ColorMode::GRAYSCALE ||
@@ -258,7 +242,6 @@ void NewFileCommand::onExecute(Context* ctx)
 
       set_current_palette(&oldPal, false);
     }
-#ifdef ENABLE_UI
     else if (clipboardImage) {
       LayerImage* layerImage = static_cast<LayerImage*>(layer);
       // layerImage->configureAsBackground();
@@ -269,16 +252,21 @@ void NewFileCommand::onExecute(Context* ctx)
       if (clipboardPalette.isBlack()) {
         render::create_palette_from_sprite(
           sprite.get(), 0, sprite->lastFrame(), true,
-          &clipboardPalette, nullptr, true);
+          &clipboardPalette, nullptr, true,
+          Preferences::instance().quantization.rgbmapAlgorithm());
       }
       sprite->setPalette(&clipboardPalette, false);
     }
-#endif // ENABLE_UI
 
     if (layer->isBackground())
       layer->setName(Strings::commands_NewFile_BackgroundLayer());
     else
       layer->setName(fmt::format("{} {}", Strings::commands_NewLayer_Layer(), 1));
+  }
+  if (sprite->pixelFormat() == IMAGE_INDEXED) {
+    sprite->rgbMap(0, Sprite::RgbMapFor(!layer->isBackground()),
+                   Preferences::instance().quantization.rgbmapAlgorithm(),
+                   Preferences::instance().quantization.fitCriteria());
   }
 
   // Show the sprite to the user
@@ -293,9 +281,9 @@ void NewFileCommand::onExecute(Context* ctx)
 std::string NewFileCommand::onGetFriendlyName() const
 {
   if (params().fromClipboard())
-    return fmt::format(Strings::commands_NewFile_FromClipboard());
+    return Strings::commands_NewFile_FromClipboard();
   else
-    return fmt::format(Strings::commands_NewFile());
+    return Strings::commands_NewFile();
 }
 
 Command* CommandFactory::createNewFileCommand()

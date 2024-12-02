@@ -1,5 +1,5 @@
 // Aseprite Document Library
-// Copyright (c) 2018-2021 Igara Studio S.A.
+// Copyright (c) 2018-2023 Igara Studio S.A.
 // Copyright (c) 2001-2016 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -13,12 +13,21 @@
 
 #include "doc/algo.h"
 #include "doc/brush.h"
+#include "doc/dispatch.h"
 #include "doc/image_impl.h"
 #include "doc/palette.h"
 #include "doc/remap.h"
 #include "doc/rgbmap.h"
+#include "doc/tile.h"
+#include "gfx/region.h"
+
+#include <city.h>
 
 #include <stdexcept>
+
+#if defined(__x86_64__) || defined(_WIN64)
+  #include <emmintrin.h>
+#endif
 
 namespace doc {
 
@@ -61,6 +70,12 @@ void copy_image(Image* dst, const Image* src, int x, int y)
   ASSERT(src);
 
   dst->copy(src, gfx::Clip(x, y, 0, 0, src->width(), src->height()));
+}
+
+void copy_image(Image* dst, const Image* src, const gfx::Region& rgn)
+{
+  for (const gfx::Rect& rc : rgn)
+    dst->copy(src, gfx::Clip(rc));
 }
 
 Image* crop_image(const Image* image, int x, int y, int w, int h, color_t bg, const ImageBufferPtr& buffer)
@@ -302,7 +317,7 @@ bool is_plain_image_templ(const Image* img, const color_t color)
   const LockImageBits<ImageTraits> bits(img);
   typename LockImageBits<ImageTraits>::const_iterator it, end;
   for (it=bits.begin(), end=bits.end(); it!=end; ++it) {
-    if (*it != color)
+    if (!ImageTraits::same_color(*it, color))
       return false;
   }
   ASSERT(it == end);
@@ -328,7 +343,7 @@ int count_diff_between_images_templ(const Image* i1, const Image* i2)
 }
 
 template<typename ImageTraits>
-int is_same_image_templ(const Image* i1, const Image* i2)
+bool is_same_image_templ(const Image* i1, const Image* i2)
 {
   const LockImageBits<ImageTraits> bits1(i1);
   const LockImageBits<ImageTraits> bits2(i2);
@@ -344,6 +359,77 @@ int is_same_image_templ(const Image* i1, const Image* i2)
   return true;
 }
 
+template<typename ImageTraits>
+bool is_same_image_simd_templ(const Image* i1, const Image* i2)
+{
+  using address_t = typename ImageTraits::address_t;
+  const int w = i1->width();
+  const int h = i1->height();
+  for (int y=0; y<h; ++y) {
+    auto p = (const address_t)i1->getPixelAddress(0, y);
+    auto q = (const address_t)i2->getPixelAddress(0, y);
+    int x = 0;
+
+#if DOC_USE_ALIGNED_PIXELS
+#if defined(__x86_64__) || defined(_WIN64)
+    // Use SSE2
+
+    if constexpr (ImageTraits::bytes_per_pixel == 4) {
+      for (; x+4<=w; x+=4, p+=4, q+=4) {
+        __m128i r = _mm_cmpeq_epi32(*(const __m128i*)p, *(const __m128i*)q);
+        if (_mm_movemask_epi8(r) != 0xffff) { // !_mm_test_all_ones(r)
+          if (!ImageTraits::same_color(p[0], q[0]) ||
+              !ImageTraits::same_color(p[1], q[1]) ||
+              !ImageTraits::same_color(p[2], q[2]) ||
+              !ImageTraits::same_color(p[3], q[3]))
+            return false;
+        }
+      }
+    }
+    else if constexpr (ImageTraits::bytes_per_pixel == 2) {
+      for (; x+8<=w; x+=8, p+=8, q+=8) {
+        __m128i r = _mm_cmpeq_epi16(*(const __m128i*)p, *(const __m128i*)q);
+        if (_mm_movemask_epi8(r) != 0xffff) { // !_mm_test_all_ones(r)
+          if (!ImageTraits::same_color(p[0], q[0]) ||
+              !ImageTraits::same_color(p[1], q[1]) ||
+              !ImageTraits::same_color(p[2], q[2]) ||
+              !ImageTraits::same_color(p[3], q[3]) ||
+              !ImageTraits::same_color(p[4], q[4]) ||
+              !ImageTraits::same_color(p[5], q[5]) ||
+              !ImageTraits::same_color(p[6], q[6]) ||
+              !ImageTraits::same_color(p[7], q[7]))
+            return false;
+        }
+      }
+    }
+    else if constexpr (ImageTraits::bytes_per_pixel == 1) {
+      for (; x+16<=w; x+=16, p+=16, q+=16) {
+        __m128i r = _mm_cmpeq_epi8(*(const __m128i*)p, *(const __m128i*)q);
+        if (_mm_movemask_epi8(r) != 0xffff) { // !_mm_test_all_ones(r)
+          return false;
+        }
+      }
+    }
+#endif
+#endif  // DOC_USE_ALIGNED_PIXELS
+    {
+      for (; x+4<=w; x+=4, p+=4, q+=4) {
+        if (!ImageTraits::same_color(p[0], q[0]) ||
+            !ImageTraits::same_color(p[1], q[1]) ||
+            !ImageTraits::same_color(p[2], q[2]) ||
+            !ImageTraits::same_color(p[3], q[3]))
+          return false;
+      }
+    }
+
+    for (; x<w; ++x, ++p, ++q) {
+      if (!ImageTraits::same_color(*p, *q))
+        return false;
+    }
+  }
+  return true;
+}
+
 } // anonymous namespace
 
 bool is_plain_image(const Image* img, color_t c)
@@ -353,6 +439,7 @@ bool is_plain_image(const Image* img, color_t c)
     case IMAGE_GRAYSCALE: return is_plain_image_templ<GrayscaleTraits>(img, c);
     case IMAGE_INDEXED:   return is_plain_image_templ<IndexedTraits>(img, c);
     case IMAGE_BITMAP:    return is_plain_image_templ<BitmapTraits>(img, c);
+    case IMAGE_TILEMAP:   return is_plain_image_templ<TilemapTraits>(img, c);
   }
   return false;
 }
@@ -377,25 +464,45 @@ int count_diff_between_images(const Image* i1, const Image* i2)
     case IMAGE_GRAYSCALE: return count_diff_between_images_templ<GrayscaleTraits>(i1, i2);
     case IMAGE_INDEXED:   return count_diff_between_images_templ<IndexedTraits>(i1, i2);
     case IMAGE_BITMAP:    return count_diff_between_images_templ<BitmapTraits>(i1, i2);
+    case IMAGE_TILEMAP:   return count_diff_between_images_templ<TilemapTraits>(i1, i2);
   }
 
   ASSERT(false);
   return -1;
 }
 
-bool is_same_image(const Image* i1, const Image* i2)
+bool is_same_image_slow(const Image* i1, const Image* i2)
 {
-  if ((i1->pixelFormat() != i2->pixelFormat()) ||
+  if ((i1->colorMode() != i2->colorMode()) ||
       (i1->width() != i2->width()) ||
       (i1->height() != i2->height()))
     return false;
 
-  switch (i1->pixelFormat()) {
-    case IMAGE_RGB:       return is_same_image_templ<RgbTraits>(i1, i2);
-    case IMAGE_GRAYSCALE: return is_same_image_templ<GrayscaleTraits>(i1, i2);
-    case IMAGE_INDEXED:   return is_same_image_templ<IndexedTraits>(i1, i2);
-    case IMAGE_BITMAP:    return is_same_image_templ<BitmapTraits>(i1, i2);
-  }
+  DOC_DISPATCH_BY_COLOR_MODE(
+    i1->colorMode(),
+    is_same_image_templ,
+    i1, i2);
+
+  ASSERT(false);
+  return false;
+}
+
+bool is_same_image(const Image* i1, const Image* i2)
+{
+  const ColorMode cm = i1->colorMode();
+
+  if ((cm != i2->colorMode()) ||
+      (i1->width() != i2->width()) ||
+      (i1->height() != i2->height()))
+    return false;
+
+  if (cm == ColorMode::BITMAP)
+    return is_same_image_templ<BitmapTraits>(i1, i2);
+
+  DOC_DISPATCH_BY_COLOR_MODE_EXCLUDE_BITMAP(
+    cm,
+    is_same_image_simd_templ,
+    i1, i2);
 
   ASSERT(false);
   return false;
@@ -403,14 +510,32 @@ bool is_same_image(const Image* i1, const Image* i2)
 
 void remap_image(Image* image, const Remap& remap)
 {
-  ASSERT(image->pixelFormat() == IMAGE_INDEXED);
-  if (image->pixelFormat() != IMAGE_INDEXED)
-    return;
+  ASSERT(image->pixelFormat() == IMAGE_INDEXED ||
+         image->pixelFormat() == IMAGE_TILEMAP);
 
-  for (auto& pixel : LockImageBits<IndexedTraits>(image)) {
-    auto to = remap[pixel];
-    if (to != Remap::kUnused)
-      pixel = to;
+  switch (image->pixelFormat()) {
+    case IMAGE_INDEXED:
+      transform_image<IndexedTraits>(
+        image, [&remap](color_t c) -> color_t {
+          auto to = remap[c];
+          if (to != Remap::kUnused)
+            return to;
+          else
+            return c;
+        });
+      break;
+    case IMAGE_TILEMAP:
+      transform_image<TilemapTraits>(
+        image, [&remap](color_t c) -> color_t {
+          auto to = remap[tile_geti(c)];
+          if (c == notile || to == Remap::kNoTile)
+            return notile;
+          else if (to != Remap::kUnused)
+            return tile(to, tile_getf(c));
+          else
+            return c;
+        });
+      break;
   }
 }
 
@@ -420,21 +545,29 @@ template <typename ImageTraits, uint32_t Mask>
 static uint32_t calculate_image_hash_templ(const Image* image,
                                            const gfx::Rect& bounds)
 {
-  uint32_t hash = 0;
-  for (int y=0; y<bounds.h; ++y) {
-    auto p = (typename ImageTraits::address_t)image->getPixelAddress(bounds.x, bounds.y+y);
-    for (int x=0; x<bounds.w; ++x, ++p) {
-      uint32_t value = *p;
-      uint32_t mask = Mask;
-      while (mask) {
-        hash += value & mask & 0xff;
-        hash <<= 1;
-        value >>= 8;
-        mask >>= 8;
-      }
-    }
+#if defined(__LP64__) || defined(__x86_64__) || defined(_WIN64)
+  #define CITYHASH(buf, len) (CityHash64(buf, len) & 0xffffffff)
+  static_assert(sizeof(void*) == 8, "This CPU is not 64-bit");
+#else
+  #define CITYHASH(buf, len) CityHash32(buf, len)
+  static_assert(sizeof(void*) == 4, "This CPU is not 32-bit");
+#endif
+
+  const uint32_t widthBytes = ImageTraits::bytes_per_pixel * bounds.w;
+  const uint32_t len = widthBytes * bounds.h;
+  if (bounds == image->bounds() &&
+      widthBytes == image->rowBytes()) {
+    return CITYHASH((const char*)image->getPixelAddress(0, 0), len);
   }
-  return hash;
+  else {
+    std::vector<uint8_t> buf(len);
+    uint8_t* dst = &buf[0];
+    for (int y=0; y<bounds.h; ++y, dst+=widthBytes) {
+      auto src = (const uint8_t*)image->getPixelAddress(bounds.x, bounds.y+y);
+      std::copy(src, src+widthBytes, dst);
+    }
+    return CITYHASH((const char*)&buf[0], buf.size());
+  }
 }
 
 uint32_t calculate_image_hash(const Image* img, const gfx::Rect& bounds)
@@ -445,18 +578,35 @@ uint32_t calculate_image_hash(const Image* img, const gfx::Rect& bounds)
     case IMAGE_INDEXED:   return calculate_image_hash_templ<IndexedTraits, 0xff>(img, bounds);
     case IMAGE_BITMAP:    return calculate_image_hash_templ<BitmapTraits, 1>(img, bounds);
   }
+  ASSERT(false);
+  return 0;
+}
 
-  uint32_t hash = 0;
-  for (int y=0; y<bounds.h; ++y) {
-    int bytes = img->getRowStrideSize(bounds.w);
-    uint8_t* p = img->getPixelAddress(bounds.x, bounds.y+y);
-    while (bytes-- > 0) {
-      hash += *p;
-      hash <<= 1;
-      ++p;
+void preprocess_transparent_pixels(Image* image)
+{
+  switch (image->pixelFormat()) {
+
+    case IMAGE_RGB: {
+      LockImageBits<RgbTraits> bits(image);
+      auto it = bits.begin(), end = bits.end();
+      for (; it != end; ++it) {
+        if (rgba_geta(*it) == 0)
+          *it = 0;
+      }
+      break;
     }
+
+    case IMAGE_GRAYSCALE: {
+      LockImageBits<GrayscaleTraits> bits(image);
+      auto it = bits.begin(), end = bits.end();
+      for (; it != end; ++it) {
+        if (graya_geta(*it) == 0)
+          *it = 0;
+      }
+      break;
+    }
+
   }
-  return hash;
 }
 
 } // namespace doc

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -25,10 +25,10 @@
 #include "app/ui/skin/skin_slider_property.h"
 #include "app/xml_document.h"
 #include "app/xml_exception.h"
-#include "base/clamp.h"
 #include "base/fs.h"
 #include "base/log.h"
 #include "base/string.h"
+#include "base/utf8_decode.h"
 #include "gfx/border.h"
 #include "gfx/point.h"
 #include "gfx/rect.h"
@@ -40,10 +40,11 @@
 #include "ui/intern.h"
 #include "ui/ui.h"
 
-#include "tinyxml.h"
+#include "tinyxml2.h"
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 #define BGCOLOR                 (getWidgetBgColor(widget))
 
@@ -51,42 +52,87 @@ namespace app {
 namespace skin {
 
 using namespace gfx;
+using namespace tinyxml2;
 using namespace ui;
 
 // TODO For backward compatibility, in future versions we should remove this (extensions are preferred)
 const char* SkinTheme::kThemesFolderName = "themes";
 
-// This class offer backward compatibility with old themes, completing
-// or changing styles from the default theme to match the default
-// theme of previous versions, so third-party themes can look like
-// they are running in the old Aseprite without any modification.
-struct app::skin::SkinTheme::BackwardCompatibility {
-  bool hasSliderStyle = false;
-  void notifyStyleExistence(const char* styleId) {
-    if (std::strcmp(styleId, "slider") == 0)
-      hasSliderStyle = true;
+// Offers backward compatibility with old themes, copying missing
+// styles (raw XML <style> elements) from the default theme to the
+// current theme. This must be done so all <style> elements in the new
+// theme use colors and parts from the new theme instead of the
+// default one (as when they were loaded).
+class app::skin::SkinTheme::BackwardCompatibility {
+
+  enum class State {
+    // When we are loading the default theme
+    LoadingStyles,
+    // When we are loading the selected theme (so we must copy missing
+    // styles from the previously loaded default theme)
+    CopyingStyles,
+  };
+
+  State m_state = State::LoadingStyles;
+
+  // Loaded XML <style> element from the original theme (cloned
+  // elements).  Must be in order to insert them in the same order in
+  // the selected theme.
+  XMLDocumentRef m_stylesDoc;
+  std::vector<XMLElement*> m_styles;
+
+public:
+  void copyingStyles() {
+    m_state = State::CopyingStyles;
   }
-  void createMissingStyles(SkinTheme* theme) {
-    if (!hasSliderStyle &&
-        theme->styles.slider() &&
-        theme->styles.miniSlider()) {
-      // Old slider style
-      ui::Style style(nullptr);
-      os::Font* font = theme->getDefaultFont();
-      const int h = font->height();
 
-      style.setId(theme->styles.slider()->id());
-      style.setFont(AddRef(font));
+  // Called for each <style> element found in theme.xml.
+  void onStyle(XMLElement* xmlStyle) {
+    // Loading <style> from the default theme
+    if (m_state == State::LoadingStyles) {
+      if (!m_stylesDoc)
+        m_stylesDoc = std::make_unique<XMLDocument>();
+      m_styles.emplace_back(
+        xmlStyle->DeepClone(m_stylesDoc.get())->ToElement());
+    }
+  }
 
-      auto part = theme->parts.sliderEmpty();
-      style.setBorder(
-        gfx::Border(part->bitmapW()->width()-1*guiscale(),
-                    part->bitmapN()->height()+h/2,
-                    part->bitmapE()->width()-1*guiscale(),
-                    part->bitmapS()->height()-1*guiscale()+h/2));
+  void removeExistentStyles(XMLElement* xmlStyle) {
+    if (m_state != State::CopyingStyles)
+      return;
 
-      *theme->styles.slider() = style;
-      *theme->styles.miniSlider() = style;
+    while (xmlStyle) {
+      const char* s = xmlStyle->Attribute("id");
+      if (!s)
+        break;
+      std::string styleId = s;
+
+      // Remove any existent style in the selected theme.
+      auto it = std::find_if(m_styles.begin(),
+                             m_styles.end(),
+                             [styleId](auto& style){
+                               return (style->Attribute("id") == styleId);
+                             });
+      if (it != m_styles.end())
+        m_styles.erase(it);
+
+      xmlStyle = xmlStyle->NextSiblingElement();
+    }
+  }
+
+  // Copies all missing <style> elements to the new theme. xmlStyles
+  // is the <styles> element from the theme.xml of the selected theme
+  // (non the default one).
+  void copyMissingStyles(XMLNode* xmlStyles) {
+    if (m_state != State::CopyingStyles)
+      return;
+
+    for (auto& style : m_styles) {
+      LOG(VERBOSE, "THEME: Copying <style id='%s'> from default theme\n",
+          style->Attribute("id"));
+
+      xmlStyles->InsertEndChild(
+        style->DeepClone(xmlStyles->GetDocument()));
     }
   }
 };
@@ -113,7 +159,7 @@ static const char* g_cursor_names[kCursorTypes] = {
 };
 
 static FontData* load_font(std::map<std::string, FontData*>& fonts,
-                           const TiXmlElement* xmlFont,
+                           const XMLElement* xmlFont,
                            const std::string& xmlFilename)
 {
   const char* fontRef = xmlFont->Attribute("font");
@@ -197,8 +243,8 @@ static FontData* load_font(std::map<std::string, FontData*>& fonts,
     font.release();
 
     // Fallback font
-    const TiXmlElement* xmlFallback =
-      (const TiXmlElement*)xmlFont->FirstChild("fallback");
+    const XMLElement* xmlFallback =
+      (const XMLElement*)xmlFont->FirstChildElement("fallback");
     if (xmlFallback) {
       FontData* fallback = load_font(fonts, xmlFallback, xmlFilename);
       if (fallback) {
@@ -217,7 +263,19 @@ static FontData* load_font(std::map<std::string, FontData*>& fonts,
 // static
 SkinTheme* SkinTheme::instance()
 {
-  return static_cast<SkinTheme*>(ui::Manager::getDefault()->theme());
+  if (auto mgr = ui::Manager::getDefault())
+    return SkinTheme::get(mgr);
+  else
+    return nullptr;
+}
+
+// static
+SkinTheme* SkinTheme::get(const ui::Widget* widget)
+{
+  ASSERT(widget);
+  ASSERT(widget->theme());
+  ASSERT(dynamic_cast<SkinTheme*>(widget->theme()));
+  return static_cast<SkinTheme*>(widget->theme());
 }
 
 SkinTheme::SkinTheme()
@@ -236,6 +294,7 @@ SkinTheme::~SkinTheme()
   for (auto& it : m_cursors)
     delete it.second;           // Delete cursor
 
+  m_unscaledSheet.reset();
   m_sheet.reset();
   m_parts_by_id.clear();
 
@@ -253,15 +312,16 @@ SkinTheme::~SkinTheme()
 void SkinTheme::onRegenerateTheme()
 {
   Preferences& pref = Preferences::instance();
+  BackwardCompatibility backward;
 
   // First we load the skin from default theme, which is more proper
   // to have every single needed skin part/color/dimension.
-  loadAll(pref.theme.selected.defaultValue());
+  loadAll(pref.theme.selected.defaultValue(), &backward);
 
   // Then we load the selected theme to redefine default theme parts.
   if (pref.theme.selected.defaultValue() != pref.theme.selected()) {
     try {
-      BackwardCompatibility backward;
+      backward.copyingStyles();
       loadAll(pref.theme.selected(), &backward);
     }
     catch (const std::exception& e) {
@@ -284,19 +344,19 @@ void SkinTheme::loadFontData()
 {
   LOG("THEME: Loading fonts\n");
 
-  std::string fonstFilename("fonts/fonts.xml");
+  std::string fontsFilename("fonts/fonts.xml");
 
   ResourceFinder rf;
-  rf.includeDataDir(fonstFilename.c_str());
+  rf.includeDataDir(fontsFilename.c_str());
   if (!rf.findFirst())
-    throw base::Exception("File %s not found", fonstFilename.c_str());
+    throw base::Exception("File %s not found", fontsFilename.c_str());
 
-  XmlDocumentRef doc = open_xml(rf.filename());
-  TiXmlHandle handle(doc.get());
+  XMLDocumentRef doc = open_xml(rf.filename());
+  XMLHandle handle(doc.get());
 
-  TiXmlElement* xmlFont = handle
-    .FirstChild("fonts")
-    .FirstChild("font").ToElement();
+  XMLElement* xmlFont = handle
+    .FirstChildElement("fonts")
+    .FirstChildElement("font").ToElement();
   while (xmlFont) {
     load_font(m_fonts, xmlFont, rf.filename());
     xmlFont = xmlFont->NextSiblingElement();
@@ -334,12 +394,19 @@ void SkinTheme::loadSheet()
   if (!newSheet)
     throw base::Exception("Error loading %s file", sheet_filename.c_str());
 
+  // TODO Change os::Surface::applyScale() to return a new surface,
+  //      avoid loading two times the same file (even more, if there
+  //      is no scale to apply, m_unscaledSheet must reference the
+  //      same m_sheet).
+  m_unscaledSheet = os::instance()->loadRgbaSurface(sheet_filename.c_str());
+
   // Replace the sprite sheet
   if (m_sheet)
     m_sheet.reset();
   m_sheet = newSheet;
   if (m_sheet)
     m_sheet->applyScale(guiscale());
+  m_sheet->setImmutable();
 
   // Reset sprite sheet and font of all layer styles (to avoid
   // dangling pointers to os::Surface or os::Font).
@@ -359,15 +426,15 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
   // Load the skin XML
   std::string xml_filename(base::join_path(m_path, "theme.xml"));
 
-  XmlDocumentRef doc = open_xml(xml_filename);
-  TiXmlHandle handle(doc.get());
+  XMLDocumentRef doc = open_xml(xml_filename);
+  XMLHandle handle(doc.get());
 
   // Load Preferred scaling
   m_preferredScreenScaling = -1;
   m_preferredUIScaling = -1;
   {
-    TiXmlElement* xmlTheme = handle
-      .FirstChild("theme").ToElement();
+    XMLElement* xmlTheme = handle
+      .FirstChildElement("theme").ToElement();
     if (xmlTheme) {
       const char* screenScaling = xmlTheme->Attribute("screenscaling");
       const char* uiScaling = xmlTheme->Attribute("uiscaling");
@@ -380,10 +447,10 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
 
   // Load fonts
   {
-    TiXmlElement* xmlFont = handle
-      .FirstChild("theme")
-      .FirstChild("fonts")
-      .FirstChild("font").ToElement();
+    XMLElement* xmlFont = handle
+      .FirstChildElement("theme")
+      .FirstChildElement("fonts")
+      .FirstChildElement("font").ToElement();
     while (xmlFont) {
       const char* idStr = xmlFont->Attribute("id");
       FontData* fontData = load_font(m_fonts, xmlFont, xml_filename);
@@ -396,8 +463,15 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         if (sizeStr)
           size = std::strtol(sizeStr, nullptr, 10);
 
+        const char* mnemonicsStr = xmlFont->Attribute("mnemonics");
+        bool mnemonics = mnemonicsStr ? (std::string(mnemonicsStr) != "off") : true;
+
         os::FontRef font = fontData->getFont(size);
-        m_themeFonts[idStr] = font;
+        m_themeFonts[idStr] = ThemeFont(font, mnemonics);
+
+        // Store a unscaled version for using when ui scaling is not desired (i.e. in a Canvas widget with
+        // autoScaling enabled).
+        m_unscaledFonts[font.get()] = fontData->getFont(size, 1);
 
         if (id == "default")
           m_defaultFont = font;
@@ -417,10 +491,10 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
 
   // Load dimension
   {
-    TiXmlElement* xmlDim = handle
-      .FirstChild("theme")
-      .FirstChild("dimensions")
-      .FirstChild("dim").ToElement();
+    XMLElement* xmlDim = handle
+      .FirstChildElement("theme")
+      .FirstChildElement("dimensions")
+      .FirstChildElement("dim").ToElement();
     while (xmlDim) {
       std::string id = xmlDim->Attribute("id");
       uint32_t value = strtol(xmlDim->Attribute("value"), NULL, 10);
@@ -434,10 +508,10 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
 
   // Load colors
   {
-    TiXmlElement* xmlColor = handle
-      .FirstChild("theme")
-      .FirstChild("colors")
-      .FirstChild("color").ToElement();
+    XMLElement* xmlColor = handle
+      .FirstChildElement("theme")
+      .FirstChildElement("colors")
+      .FirstChildElement("color").ToElement();
     while (xmlColor) {
       std::string id = xmlColor->Attribute("id");
       uint32_t value = strtol(xmlColor->Attribute("value")+1, NULL, 16);
@@ -455,10 +529,10 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
 
   // Load parts
   {
-    TiXmlElement* xmlPart = handle
-      .FirstChild("theme")
-      .FirstChild("parts")
-      .FirstChild("part").ToElement();
+    XMLElement* xmlPart = handle
+      .FirstChildElement("theme")
+      .FirstChildElement("parts")
+      .FirstChildElement("part").ToElement();
     while (xmlPart) {
       // Get the tool-icon rectangle
       const char* part_id = xmlPart->Attribute("id");
@@ -473,9 +547,15 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
       if (!part)
         part = m_parts_by_id[part_id] = SkinPartPtr(new SkinPart);
 
+      SkinPartPtr unscaledPart = m_unscaledParts_by_id[part_id];
+      if (!unscaledPart)
+        unscaledPart = m_unscaledParts_by_id[part_id] = SkinPartPtr(new SkinPart);
+
       if (w > 0 && h > 0) {
         part->setSpriteBounds(gfx::Rect(x, y, w, h));
         part->setBitmap(0, sliceSheet(part->bitmapRef(0), gfx::Rect(x, y, w, h)));
+        unscaledPart->setSpriteBounds(part->spriteBounds()/scale);
+        unscaledPart->setBitmap(0, sliceUnscaledSheet(unscaledPart->bitmapRef(0), unscaledPart->spriteBounds()));
       }
       else if (xmlPart->Attribute("w1")) { // 3x3-1 part (NW, N, NE, E, SE, S, SW, W)
         int w1 = scale*strtol(xmlPart->Attribute("w1"), nullptr, 10);
@@ -496,6 +576,18 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         part->setBitmap(5, sliceSheet(part->bitmapRef(5), gfx::Rect(x+w1, y+h1+h2, w2, h3))); // S
         part->setBitmap(6, sliceSheet(part->bitmapRef(6), gfx::Rect(x, y+h1+h2, w1, h3))); // SW
         part->setBitmap(7, sliceSheet(part->bitmapRef(7), gfx::Rect(x, y+h1, w1, h2))); // W
+
+        unscaledPart->setSpriteBounds(part->spriteBounds()/scale);
+        unscaledPart->setSlicesBounds(part->slicesBounds()/scale);
+
+        unscaledPart->setBitmap(0, sliceUnscaledSheet(unscaledPart->bitmapRef(0), gfx::Rect(x, y, w1, h1)/scale));
+        unscaledPart->setBitmap(1, sliceUnscaledSheet(unscaledPart->bitmapRef(1), gfx::Rect(x+w1, y, w2, h1)/scale));
+        unscaledPart->setBitmap(2, sliceUnscaledSheet(unscaledPart->bitmapRef(2), gfx::Rect(x+w1+w2, y, w3, h1)/scale));
+        unscaledPart->setBitmap(3, sliceUnscaledSheet(unscaledPart->bitmapRef(3), gfx::Rect(x+w1+w2, y+h1, w3, h2)/scale));
+        unscaledPart->setBitmap(4, sliceUnscaledSheet(unscaledPart->bitmapRef(4), gfx::Rect(x+w1+w2, y+h1+h2, w3, h3)/scale));
+        unscaledPart->setBitmap(5, sliceUnscaledSheet(unscaledPart->bitmapRef(5), gfx::Rect(x+w1, y+h1+h2, w2, h3)/scale));
+        unscaledPart->setBitmap(6, sliceUnscaledSheet(unscaledPart->bitmapRef(6), gfx::Rect(x, y+h1+h2, w1, h3)/scale));
+        unscaledPart->setBitmap(7, sliceUnscaledSheet(unscaledPart->bitmapRef(7), gfx::Rect(x, y+h1, w1, h2)/scale));
       }
 
       // Is it a mouse cursor?
@@ -530,13 +622,18 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
 
   // Load styles
   {
-    TiXmlElement* xmlStyle = handle
-      .FirstChild("theme")
-      .FirstChild("styles")
-      .FirstChild("style").ToElement();
+    XMLElement* xmlStyle = handle
+      .FirstChildElement("theme")
+      .FirstChildElement("styles")
+      .FirstChildElement("style").ToElement();
 
     if (!xmlStyle)              // Without styles?
       throw base::Exception("There are no styles");
+
+    if (backward) {
+      backward->removeExistentStyles(xmlStyle);
+      backward->copyMissingStyles(xmlStyle->Parent());
+    }
 
     while (xmlStyle) {
       const char* style_id = xmlStyle->Attribute("id");
@@ -551,7 +648,7 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         base = m_styles[extends_id];
 
       if (backward)
-        backward->notifyStyleExistence(style_id);
+        backward->onStyle(xmlStyle);
 
       ui::Style* style = m_styles[style_id];
       if (!style) {
@@ -569,7 +666,7 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         const char* t = xmlStyle->Attribute("margin-top");
         const char* r = xmlStyle->Attribute("margin-right");
         const char* b = xmlStyle->Attribute("margin-bottom");
-        gfx::Border margin = ui::Style::UndefinedBorder();
+        gfx::Border margin = style->margin();
         if (m || l) margin.left(scale*std::strtol(l ? l: m, nullptr, 10));
         if (m || t) margin.top(scale*std::strtol(t ? t: m, nullptr, 10));
         if (m || r) margin.right(scale*std::strtol(r ? r: m, nullptr, 10));
@@ -584,7 +681,7 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         const char* t = xmlStyle->Attribute("border-top");
         const char* r = xmlStyle->Attribute("border-right");
         const char* b = xmlStyle->Attribute("border-bottom");
-        gfx::Border border = ui::Style::UndefinedBorder();
+        gfx::Border border = style->border();
         if (m || l) border.left(scale*std::strtol(l ? l: m, nullptr, 10));
         if (m || t) border.top(scale*std::strtol(t ? t: m, nullptr, 10));
         if (m || r) border.right(scale*std::strtol(r ? r: m, nullptr, 10));
@@ -599,7 +696,7 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         const char* t = xmlStyle->Attribute("padding-top");
         const char* r = xmlStyle->Attribute("padding-right");
         const char* b = xmlStyle->Attribute("padding-bottom");
-        gfx::Border padding = ui::Style::UndefinedBorder();
+        gfx::Border padding = style->padding();
         if (m || l) padding.left(scale*std::strtol(l ? l: m, nullptr, 10));
         if (m || t) padding.top(scale*std::strtol(t ? t: m, nullptr, 10));
         if (m || r) padding.right(scale*std::strtol(r ? r: m, nullptr, 10));
@@ -607,16 +704,61 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
         style->setPadding(padding);
       }
 
+      // Size
+      {
+        const char* width     = xmlStyle->Attribute("width");
+        const char* height    = xmlStyle->Attribute("height");
+        const char* minwidth  = xmlStyle->Attribute("minwidth");
+        const char* minheight = xmlStyle->Attribute("minheight");
+        const char* maxwidth  = xmlStyle->Attribute("maxwidth");
+        const char* maxheight = xmlStyle->Attribute("maxheight");
+        gfx::Size minSize = style->minSize();
+        gfx::Size maxSize = style->maxSize();
+        if (width) {
+          if (!minwidth) minwidth = width;
+          if (!maxwidth) maxwidth = width;
+        }
+        if (height) {
+          if (!minheight) minheight = height;
+          if (!maxheight) maxheight = height;
+        }
+        if (minwidth) minSize.w = scale*std::strtol(minwidth, nullptr, 10);
+        if (minheight) minSize.h = scale*std::strtol(minheight, nullptr, 10);
+        if (maxwidth) maxSize.w = scale*std::strtol(maxwidth, nullptr, 10);
+        if (maxheight) maxSize.h = scale*std::strtol(maxheight, nullptr, 10);
+        style->setMinSize(minSize);
+        style->setMaxSize(maxSize);
+      }
+
+      // Gap
+      {
+        const char* m = xmlStyle->Attribute("gap");
+        const char* r = xmlStyle->Attribute("gap-rows");
+        const char* c = xmlStyle->Attribute("gap-columns");
+        gfx::Size gap = style->gap();
+        if (m || c) gap.w = scale*std::strtol(c ? c: m, nullptr, 10);
+        if (m || r) gap.h = scale*std::strtol(r ? r: m, nullptr, 10);
+        style->setGap(gap);
+      }
+
       // Font
       {
         const char* fontId = xmlStyle->Attribute("font");
         if (fontId) {
-          os::FontRef font = m_themeFonts[fontId];
-          style->setFont(font);
+          auto themeFont = m_themeFonts[fontId];
+          style->setFont(themeFont.font());
+          style->setMnemonics(themeFont.mnemonics());
+        }
+
+        // Override mnemonics value if it is defined for this style.
+        const char* mnemonicsStr = xmlStyle->Attribute("mnemonics");
+        if (mnemonicsStr) {
+          bool mnemonics = mnemonicsStr ? (std::string(mnemonicsStr) != "off") : true;
+          style->setMnemonics(mnemonics);
         }
       }
 
-      TiXmlElement* xmlLayer = xmlStyle->FirstChildElement();
+      XMLElement* xmlLayer = xmlStyle->FirstChildElement();
       while (xmlLayer) {
         const std::string layerName = xmlLayer->Value();
 
@@ -653,6 +795,7 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
           if (state.find("selected") != std::string::npos) flags |= ui::Style::Layer::kSelected;
           if (state.find("focus") != std::string::npos) flags |= ui::Style::Layer::kFocus;
           if (state.find("mouse") != std::string::npos) flags |= ui::Style::Layer::kMouse;
+          if (state.find("capture") != std::string::npos) flags |= ui::Style::Layer::kCapture;
           layer.setFlags(flags);
         }
 
@@ -736,13 +879,10 @@ void SkinTheme::loadXml(BackwardCompatibility* backward)
     }
   }
 
-  if (backward)
-    backward->createMissingStyles(this);
-
   ThemeFile<SkinTheme>::updateInternals();
 }
 
-os::SurfaceRef SkinTheme::sliceSheet(os::SurfaceRef sur, const gfx::Rect& bounds)
+static os::SurfaceRef sliceSheet(os::SurfaceRef sheet, os::SurfaceRef sur, const gfx::Rect& bounds)
 {
   if (sur && (sur->width() != bounds.w ||
               sur->height() != bounds.h)) {
@@ -753,15 +893,31 @@ os::SurfaceRef SkinTheme::sliceSheet(os::SurfaceRef sur, const gfx::Rect& bounds
     if (!sur)
       sur = os::instance()->makeRgbaSurface(bounds.w, bounds.h);
 
-    os::SurfaceLock lockSrc(m_sheet.get());
+    os::SurfaceLock lockSrc(sheet.get());
     os::SurfaceLock lockDst(sur.get());
-    m_sheet->blitTo(sur.get(), bounds.x, bounds.y, 0, 0, bounds.w, bounds.h);
+    sheet->blitTo(sur.get(), bounds.x, bounds.y, 0, 0, bounds.w, bounds.h);
+
+    // The new surface is immutable because we're going to re-use the
+    // surface if we reload the theme.
+    //
+    // TODO Add sub-surfaces (SkBitmap::extractSubset())
+    //sur->setImmutable();
   }
   else {
     ASSERT(!sur);
   }
 
   return sur;
+}
+
+os::SurfaceRef SkinTheme::sliceSheet(os::SurfaceRef sur, const gfx::Rect& bounds)
+{
+  return app::skin::sliceSheet(m_sheet, sur, bounds);
+}
+
+os::SurfaceRef SkinTheme::sliceUnscaledSheet(os::SurfaceRef sur, const gfx::Rect& bounds)
+{
+  return app::skin::sliceSheet(m_unscaledSheet, sur, bounds);
 }
 
 os::Font* SkinTheme::getWidgetFont(const Widget* widget) const
@@ -824,6 +980,7 @@ void SkinTheme::initWidget(Widget* widget)
       widget->setStyle(styles.grid());
       BORDER(0);
       widget->setChildSpacing(4 * scale);
+      static_cast<ui::Grid *>(widget)->setGap(styles.grid()->gap());
       break;
 
     case kLabelWidget:
@@ -894,9 +1051,8 @@ void SkinTheme::initWidget(Widget* widget)
       break;
 
     case kTextBoxWidget:
-      BORDER(4*guiscale());
       widget->setChildSpacing(0);
-      widget->setBgColor(colors.textboxFace());
+      widget->setStyle(styles.textboxText());
       break;
 
     case kViewWidget:
@@ -923,7 +1079,7 @@ void SkinTheme::initWidget(Widget* widget)
       if (TipWindow* window = dynamic_cast<TipWindow*>(widget)) {
         window->setStyle(styles.tooltipWindow());
         window->setArrowStyle(styles.tooltipWindowArrow());
-        window->textBox()->setStyle(SkinTheme::instance()->styles.tooltipText());
+        window->textBox()->setStyle(styles.tooltipText());
       }
       else if (dynamic_cast<TransparentPopupWindow*>(widget)) {
         widget->setStyle(styles.transparentPopupWindow());
@@ -945,11 +1101,11 @@ void SkinTheme::initWidget(Widget* widget)
       break;
 
     case kWindowTitleLabelWidget:
-      widget->setStyle(SkinTheme::instance()->styles.windowTitleLabel());
+      widget->setStyle(styles.windowTitleLabel());
       break;
 
     case kWindowCloseButtonWidget:
-      widget->setStyle(SkinTheme::instance()->styles.windowCloseButton());
+      widget->setStyle(styles.windowCloseButton());
       break;
 
     default:
@@ -1023,8 +1179,10 @@ public:
                       gfx::Color& fg,
                       gfx::Color& bg,
                       const gfx::Rect& charBounds) override {
+    auto theme = SkinTheme::get(m_widget);
+
     // Normal text
-    auto& colors = SkinTheme::instance()->colors;
+    auto& colors = theme->colors;
     bg = ColorNone;
     fg = colors.text();
 
@@ -1074,7 +1232,8 @@ public:
         m_index == m_caret &&
         m_widget->hasFocus() &&
         m_widget->isEnabled()) {
-      SkinTheme::instance()->drawEntryCaret(
+      auto theme = SkinTheme::get(m_widget);
+      theme->drawEntryCaret(
         m_graphics, m_widget,
         m_charStartX-m_widget->bounds().x, m_y);
       m_caretDrawn = true;
@@ -1109,14 +1268,13 @@ void SkinTheme::drawEntryText(ui::Graphics* g, ui::Entry* widget)
   int scroll = delegate.index();
 
   const std::string& textString = widget->text();
-  base::utf8_const_iterator utf8_it((textString.begin()));
-  int textlen = base::utf8_length(textString);
-  scroll = std::min(scroll, textlen);
-  if (scroll)
-    utf8_it += scroll;
+  base::utf8_decode dec(textString);
+  auto pos = dec.pos();
+  for (int i=0; i<scroll && dec.next(); ++i)
+    pos = dec.pos();
 
-  g->drawText(utf8_it,
-              base::utf8_const_iterator(textString.end()),
+  // TODO use a string_view()
+  g->drawText(std::string(pos, textString.end()),
               colors.text(), ColorNone,
               bounds.origin(), &delegate);
 
@@ -1337,16 +1495,16 @@ void SkinTheme::paintSlider(PaintEvent& ev)
     SkinPartPtr empty_part;
 
     if (isMiniLook) {
-      full_part = widget->hasMouseOver() ? parts.miniSliderFullFocused():
-                                           parts.miniSliderFull();
-      empty_part = widget->hasMouseOver() ? parts.miniSliderEmptyFocused():
-                                            parts.miniSliderEmpty();
+      full_part = (widget->hasMouse() ? parts.miniSliderFullFocused():
+                                        parts.miniSliderFull());
+      empty_part = (widget->hasMouse() ? parts.miniSliderEmptyFocused():
+                                         parts.miniSliderEmpty());
     }
     else {
-      full_part = widget->hasFocus() ? parts.sliderFullFocused():
-                                       parts.sliderFull();
-      empty_part = widget->hasFocus() ? parts.sliderEmptyFocused():
-                                        parts.sliderEmpty();
+      full_part = (widget->hasFocus() ? parts.sliderFullFocused():
+                                        parts.sliderFull());
+      empty_part = (widget->hasFocus() ? parts.sliderEmptyFocused():
+                                         parts.sliderEmpty());
     }
 
     if (value == min)
@@ -1392,15 +1550,9 @@ void SkinTheme::paintComboBoxEntry(ui::PaintEvent& ev)
   Graphics* g = ev.graphics();
   Entry* widget = static_cast<Entry*>(ev.getSource());
   gfx::Rect bounds = widget->clientBounds();
+  ui::Style* style = styles.combobox();
 
-  // Outside borders
-  g->fillRect(BGCOLOR, bounds);
-
-  drawRect(g, bounds,
-           (widget->hasFocus() ?
-            parts.sunken2Focused().get():
-            parts.sunken2Normal().get()));
-
+  paintWidget(g, widget, style, bounds);
   drawEntryText(g, widget);
 }
 
@@ -1409,8 +1561,7 @@ void SkinTheme::paintTextBox(ui::PaintEvent& ev)
   Graphics* g = ev.graphics();
   Widget* widget = static_cast<Widget*>(ev.getSource());
 
-  Theme::drawTextBox(g, widget, nullptr, nullptr,
-                     BGCOLOR, colors.textboxText());
+  Theme::paintTextBoxWithStyle(g, widget);
 }
 
 void SkinTheme::paintViewViewport(PaintEvent& ev)
@@ -1606,6 +1757,16 @@ void SkinTheme::drawRect(ui::Graphics* g, const gfx::Rect& rc,
                     drawCenter);
 }
 
+void SkinTheme::drawRectUsingUnscaledSheet(ui::Graphics* g, const gfx::Rect& rc,
+                                           SkinPart* skinPart, const bool drawCenter)
+{
+  Theme::drawSlices(g, m_unscaledSheet.get(), rc,
+                    skinPart->spriteBounds(),
+                    skinPart->slicesBounds(),
+                    gfx::ColorNone,
+                    drawCenter);
+}
+
 void SkinTheme::drawRect2(Graphics* g, const Rect& rc, int x_mid,
                           SkinPart* nw1, SkinPart* nw2)
 {
@@ -1672,7 +1833,7 @@ void SkinTheme::paintProgressBar(ui::Graphics* g, const gfx::Rect& rc0, double p
   rc.shrink(1);
 
   int u = (int)((double)rc.w*progress);
-  u = base::clamp(u, 0, rc.w);
+  u = std::clamp(u, 0, rc.w);
 
   if (u > 0)
     g->fillRect(colors.selected(), gfx::Rect(rc.x, rc.y, u, rc.h));

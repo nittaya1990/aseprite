@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (c) 2018-2019  Igara Studio S.A.
+// Copyright (c) 2018-2023  Igara Studio S.A.
 //
 // This program is distributed under the terms of
 // the End-User License Agreement for Aseprite.
@@ -88,7 +88,7 @@ bool CssFormat::onLoad(FileOp* fop)
 
 bool CssFormat::onSave(FileOp* fop)
 {
-  const Image* image = fop->sequenceImage();
+  const ImageRef image = fop->sequenceImageToSave();
   int x, y, c, r, g, b, a, alpha;
   const auto css_options = std::static_pointer_cast<CssOptions>(fop->formatOptions());
   FileHandle handle(open_file_with_exception_sync_on_close(fop->filename(), "wb"));
@@ -160,7 +160,7 @@ bool CssFormat::onSave(FileOp* fop)
     case IMAGE_RGB: {
       for (y=0; y<image->height(); y++) {
         for (x=0; x<image->width(); x++) {
-          c = get_pixel_fast<RgbTraits>(image, x, y);
+          c = get_pixel_fast<RgbTraits>(image.get(), x, y);
           alpha = rgba_geta(c);
           if (alpha != 0x00) {
             print_shadow_color(x, y, rgba_getr(c), rgba_getg(c), rgba_getb(c),
@@ -175,7 +175,7 @@ bool CssFormat::onSave(FileOp* fop)
     case IMAGE_GRAYSCALE: {
       for (y=0; y<image->height(); y++) {
         for (x=0; x<image->width(); x++) {
-          c = get_pixel_fast<GrayscaleTraits>(image, x, y);
+          c = get_pixel_fast<GrayscaleTraits>(image.get(), x, y);
           auto v = graya_getv(c);
           alpha = graya_geta(c);
           if (alpha != 0x00) {
@@ -204,7 +204,7 @@ bool CssFormat::onSave(FileOp* fop)
       }
       for (y=0; y<image->height(); y++) {
         for (x=0; x<image->width(); x++) {
-          c = get_pixel_fast<IndexedTraits>(image, x, y);
+          c = get_pixel_fast<IndexedTraits>(image.get(), x, y);
           if (c != mask_color) {
             if (css_options->withVars) {
               print_shadow_index(x, y, c, num_printed_pixels>0);
@@ -254,8 +254,8 @@ FormatOptionsPtr CssFormat::onAskUserForFormatOptions(FileOp* fop)
 {
   auto opts = fop->formatOptionsOfDocument<CssOptions>();
 
-#ifdef ENABLE_UI
-  if (fop->context() && fop->context()->isUIAvailable()) {
+  if (fop->context() &&
+      fop->context()->isUIAvailable()) {
     try {
       auto &pref = Preferences::instance();
 
@@ -296,7 +296,6 @@ FormatOptionsPtr CssFormat::onAskUserForFormatOptions(FileOp* fop)
     }
   }
 
-#endif
   return opts;
 }
 

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -37,6 +38,7 @@ namespace app {
     void goForward();
     void goUp();
     void goInsideFolder();
+    void refreshCurrentFolder();
 
     // Shows the dialog to select a file in the program.
     bool show(const std::string& title,
@@ -45,6 +47,9 @@ namespace app {
               base::paths& output);
 
   private:
+    void onOpen(ui::Event& ev) override;
+    bool onProcessMessage(ui::Message* msg) override;
+
     void updateLocation();
     void updateNavigationButtons();
     void addInNavigationHistory(IFileItem* folder);
@@ -58,6 +63,7 @@ namespace app {
     void onFileListFileSelected();
     void onFileListFileAccepted();
     void onFileListCurrentFolderChanged();
+    void onRefreshFolder();
     std::string getSelectedExtension() const;
 
     class ArrowNavigator;

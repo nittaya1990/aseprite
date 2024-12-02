@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -24,12 +24,10 @@
 #include "app/ui/separator_in_view.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/widget_loader.h"
-#include "base/clamp.h"
 #include "base/convert_to.h"
 #include "base/fs.h"
 #include "base/paths.h"
 #include "base/string.h"
-#include "fmt/format.h"
 #include "ui/ui.h"
 
 #include "new_folder_window.xml.h"
@@ -55,6 +53,8 @@ using namespace app::skin;
 using namespace ui;
 
 namespace {
+
+const char* kConfigSection = "FileSelector";
 
 template<class Container>
 class NullableIterator {
@@ -128,7 +128,7 @@ void adjust_navigation_history(IFileItem* item)
   }
 
   if (valid && !navigation_history.empty()) {
-    pos = base::clamp(pos, 0, (int)navigation_history.size()-1);
+    pos = std::clamp(pos, 0, (int)navigation_history.size()-1);
     navigation_position.set(navigation_history.begin() + pos);
 
     FILESEL_TRACE("FILESEL: New navigation pos [%d] = %s\n",
@@ -280,6 +280,9 @@ protected:
         bool back = (msg->altPressed() && scancode == kKeyLeft);
         bool forward = (msg->altPressed() && scancode == kKeyRight);
 #endif
+        bool refresh = (scancode == kKeyF5 ||
+                        (msg->ctrlPressed() && scancode == kKeyR) ||
+                        (msg->cmdPressed() && scancode == kKeyR));
 
         if (up) {
           m_filesel->goUp();
@@ -296,6 +299,9 @@ protected:
         if (forward) {
           m_filesel->goForward();
           return true;
+        }
+        if (refresh) {
+          m_filesel->refreshCurrentFolder();
         }
         return false;
       }
@@ -320,6 +326,7 @@ FileSelector::FileSelector(FileSelectorType type)
   goBackButton()->setFocusStop(false);
   goForwardButton()->setFocusStop(false);
   goUpButton()->setFocusStop(false);
+  refreshButton()->setFocusStop(false);
   newFolderButton()->setFocusStop(false);
   viewType()->setFocusStop(false);
   for (auto child : viewType()->children())
@@ -338,6 +345,7 @@ FileSelector::FileSelector(FileSelectorType type)
   goBackButton()->Click.connect([this]{ onGoBack(); });
   goForwardButton()->Click.connect([this]{ onGoForward(); });
   goUpButton()->Click.connect([this]{ onGoUp(); });
+  refreshButton()->Click.connect([this] { onRefreshFolder(); });
   newFolderButton()->Click.connect([this]{ onNewFolder(); });
   viewType()->ItemChange.connect([this]{ onChangeViewType(); });
   location()->CloseListBox.connect([this]{ onLocationCloseListBox(); });
@@ -380,6 +388,11 @@ void FileSelector::goInsideFolder()
   }
 }
 
+void FileSelector::refreshCurrentFolder()
+{
+  onRefreshFolder();
+}
+
 bool FileSelector::show(
   const std::string& title,
   const std::string& initialPath,
@@ -396,34 +409,27 @@ bool FileSelector::show(
 
   fs->refresh();
 
-  // we have to find where the user should begin to browse files (start_folder)
-  std::string start_folder_path;
-  IFileItem* start_folder = nullptr;
+  // We have to find where the user should begin to browse files
+  std::string start_folder_path =
+    base::get_file_path(
+      get_initial_path_to_select_filename(initialPath));
 
-  // If initialPath doesn't contain a path.
-  if (base::get_file_path(initialPath).empty()) {
-    // Get the saved `path' in the configuration file.
-    std::string path = Preferences::instance().fileSelector.currentFolder();
-    if (path == "<empty>") {
-      start_folder_path = base::get_user_docs_folder();
-      path = base::join_path(start_folder_path, initialPath);
-    }
-    start_folder = fs->getFileItemFromPath(path);
+  IFileItem* start_folder = fs->getFileItemFromPath(start_folder_path);
+  if (!start_folder) {
+    // If the directory doesn't exist anymore, get the default FS item
+    // (root item, or user folder).
+    start_folder = fs->getFileItemFromPath(std::string());
   }
-  else {
-    // Remove the filename.
-    start_folder_path = base::join_path(base::get_file_path(initialPath), "");
-  }
-  start_folder_path = base::fix_path_separators(start_folder_path);
-
-  if (!start_folder)
-    start_folder = fs->getFileItemFromPath(start_folder_path);
-
   FILESEL_TRACE("FILESEL: Start folder '%s' (%p)\n", start_folder_path.c_str(), start_folder);
 
-  setMinSize(gfx::Size(ui::display_w()*9/10, ui::display_h()*9/10));
+  {
+    const gfx::Size workareaSize = ui::Manager::getDefault()->display()->workareaSizeUIScale();
+    setMinSize(workareaSize*9/10);
+  }
+
   remapWindow();
   centerWindow();
+  load_window_pos(this, kConfigSection);
 
   // Change the file formats/extensions to be shown
   std::string initialExtension = base::get_file_extension(initialPath);
@@ -466,7 +472,8 @@ bool FileSelector::show(
 
   // File type for all formats
   fileType()->addItem(
-    new CustomFileExtensionItem("All formats", allExtensions));
+    new CustomFileExtensionItem(Strings::file_selector_all_formats(),
+                                allExtensions));
 
   // One file type for each supported image format
   for (const auto& e : allExtensions) {
@@ -480,7 +487,7 @@ bool FileSelector::show(
   }
   // All files
   fileType()->addItem(
-    new CustomFileExtensionItem("All files",
+    new CustomFileExtensionItem(Strings::file_selector_all_files(),
                                 base::paths())); // Empty extensions means "*.*"
 
   // file name entry field
@@ -630,9 +637,8 @@ again:
         const char* invalid_chars = ": * ? \" < > |";
 
         ui::Alert::show(
-            fmt::format(
-                Strings::alerts_invalid_chars_in_filename(),
-                invalid_chars));
+          Strings::alerts_invalid_chars_in_filename(
+            invalid_chars));
 
         // show the window again
         setVisible(true);
@@ -651,9 +657,7 @@ again:
 
     if (m_type == FileSelectorType::Save && base::is_file(buf)) {
       int ret = Alert::show(
-        fmt::format(
-          Strings::alerts_overwrite_existent_file(),
-          base::get_file_name(buf)));
+        Strings::alerts_overwrite_existent_file(base::get_file_name(buf)));
       if (ret == 2) {
         setVisible(true);
         goto again;
@@ -683,11 +687,27 @@ again:
 
     // save the path in the configuration file
     std::string lastpath = folder->keyName();
-    Preferences::instance().fileSelector.currentFolder(lastpath);
+    set_current_dir_for_file_selector(lastpath);
   }
   Preferences::instance().fileSelector.zoom(m_fileList->zoom());
 
   return (!output.empty());
+}
+
+void FileSelector::onOpen(Event& ev)
+{
+  app::gen::FileSelector::onOpen(ev);
+  onRefreshFolder();
+}
+
+bool FileSelector::onProcessMessage(ui::Message* msg)
+{
+  switch (msg->type()) {
+    case kCloseMessage:
+      save_window_pos(this, kConfigSection);
+      break;
+  }
+  return app::gen::FileSelector::onProcessMessage(msg);
 }
 
 // Updates the content of the combo-box that shows the current
@@ -857,6 +877,14 @@ void FileSelector::onGoForward()
 void FileSelector::onGoUp()
 {
   m_fileList->goUp();
+}
+
+void FileSelector::onRefreshFolder()
+{
+  auto fs = FileSystemModule::instance();
+  fs->refresh();
+
+  m_fileList->setCurrentFolder(m_fileList->currentFolder());
 }
 
 void FileSelector::onNewFolder()

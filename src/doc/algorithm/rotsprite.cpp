@@ -1,5 +1,5 @@
 // Aseprite Document Library
-// Copyright (c) 2020  Igara Studio S.A.
+// Copyright (c) 2020-2023  Igara Studio S.A.
 // Copyright (c) 2001-2018 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -215,17 +215,16 @@ void rotsprite_image(Image* bmp, const Image* spr, const Image* mask,
   }
 
   clear_image(bmp_copy.get(), maskColor);
-  scale_image(bmp_copy.get(), bmp,
-              0, 0, bmp_copy->width(), bmp_copy->height(),
-              xmin, ymin, rot_width, rot_height);
-
   parallelogram(
     bmp_copy.get(), spr_copy.get(), msk_copy.get(),
     (x1-xmin)*scale, (y1-ymin)*scale, (x2-xmin)*scale, (y2-ymin)*scale,
     (x3-xmin)*scale, (y3-ymin)*scale, (x4-xmin)*scale, (y4-ymin)*scale);
 
   scale_image(bmp, bmp_copy.get(),
-              xmin, ymin, rot_width, rot_height,
+              std::max(0, xmin),
+              std::max(0, ymin),
+              std::clamp(rot_width, 0, std::max(0, bmp->width() - std::max(0, xmin))),
+              std::clamp(rot_height, 0, std::max(0, bmp->height() - std::max(0, ymin))),
               0, 0, bmp_copy->width(), bmp_copy->height());
 }
 

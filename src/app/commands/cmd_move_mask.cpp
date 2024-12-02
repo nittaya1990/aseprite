@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -17,7 +17,6 @@
 #include "app/context_access.h"
 #include "app/doc_api.h"
 #include "app/i18n/strings.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/pref/preferences.h"
 #include "app/tx.h"
@@ -27,7 +26,6 @@
 #include "base/convert_to.h"
 #include "doc/mask.h"
 #include "doc/sprite.h"
-#include "fmt/format.h"
 #include "ui/view.h"
 
 namespace app {
@@ -65,8 +63,13 @@ bool MoveMaskCommand::onEnabled(Context* context)
                                    ContextFlags::HasVisibleMask |
                                    ContextFlags::HasActiveImage |
                                    ContextFlags::ActiveLayerIsEditable);
-      else
-        return (current_editor ? true: false);
+      else {
+        auto editor = Editor::activeEditor();
+        return (editor != nullptr) &&
+          context->checkFlags(ContextFlags::HasActiveDocument |
+                              ContextFlags::HasVisibleMask |
+                              ContextFlags::HasActiveImage);
+      }
 
   }
 
@@ -83,7 +86,7 @@ void MoveMaskCommand::onExecute(Context* context)
       ContextWriter writer(context);
       Doc* document(writer.document());
       {
-        Tx tx(writer.context(), "Move Selection", DoesntModifyDocument);
+        Tx tx(writer, "Move Selection", DoesntModifyDocument);
         gfx::Point pt = document->mask()->bounds().origin();
         document->getApi(tx).setMaskPosition(pt.x+delta.x, pt.y+delta.y);
         tx.commit();
@@ -98,14 +101,15 @@ void MoveMaskCommand::onExecute(Context* context)
         ContextWriter writer(context);
         if (writer.cel()) {
           // Rotate content
-          Tx tx(writer.context(), "Shift Pixels");
+          Tx tx(writer, "Shift Pixels");
           tx(new cmd::ShiftMaskedCel(writer.cel(), delta.x, delta.y));
           tx.commit();
         }
         update_screen_for_document(writer.document());
       }
       else {
-        current_editor->startSelectionTransformation(delta, 0.0);
+        auto editor = Editor::activeEditor();
+        editor->startSelectionTransformation(delta, 0.0);
       }
       break;
 
@@ -119,8 +123,8 @@ std::string MoveMaskCommand::onGetFriendlyName() const
     case Boundaries: content = Strings::commands_MoveMask_Boundaries(); break;
     case Content: content = Strings::commands_MoveMask_Content(); break;
   }
-  return fmt::format(getBaseFriendlyName(),
-                     content, m_moveThing.getFriendlyString());
+  return Strings::commands_MoveMask(content,
+                                    m_moveThing.getFriendlyString());
 }
 
 Command* CommandFactory::createMoveMaskCommand()

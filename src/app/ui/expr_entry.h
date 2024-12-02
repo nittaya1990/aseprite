@@ -20,11 +20,16 @@ namespace app {
     int decimals() const { return m_decimals; }
     void setDecimals(int decimals) { m_decimals = decimals; }
 
+    // Signals
+    obs::signal<void()> Leave;
+
   protected:
     bool onProcessMessage(ui::Message* msg) override;
     void onChange() override;
     int onGetTextInt() const override;
     double onGetTextDouble() const override;
+
+    virtual void onFormatExprFocusLeave(std::string& buf);
 
     int m_decimals;
   };

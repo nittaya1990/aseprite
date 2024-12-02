@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (c) 2020  Igara Studio S.A.
+// Copyright (c) 2020-2024  Igara Studio S.A.
 // Copyright (c) 2001-2018 David Capello
 //
 // This program is distributed under the terms of
@@ -20,6 +20,10 @@
 #include "os/surface.h"
 #include "os/surface_format.h"
 
+#if LAF_SKIA
+  #include "os/skia/skia_surface.h"
+#endif
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -30,13 +34,13 @@ using namespace doc;
 namespace {
 
 template<typename ImageTraits, os::SurfaceFormat format>
-uint32_t convert_color_to_surface(color_t color, const Palette* palette, const os::SurfaceFormatData* fd) {
+uint32_t convert_color_to_surface(color_t color, const Palette* palette, const ImageSpec& spec, const os::SurfaceFormatData* fd) {
   static_assert(false && sizeof(ImageTraits), "Invalid color conversion");
   return 0;
 }
 
 template<>
-uint32_t convert_color_to_surface<RgbTraits, os::kRgbaSurfaceFormat>(color_t c, const Palette* palette, const os::SurfaceFormatData* fd) {
+uint32_t convert_color_to_surface<RgbTraits, os::kRgbaSurfaceFormat>(color_t c, const Palette* palette, const ImageSpec& spec, const os::SurfaceFormatData* fd) {
   return
     ((rgba_getr(c) << fd->redShift  ) & fd->redMask  ) |
     ((rgba_getg(c) << fd->greenShift) & fd->greenMask) |
@@ -45,7 +49,7 @@ uint32_t convert_color_to_surface<RgbTraits, os::kRgbaSurfaceFormat>(color_t c, 
 }
 
 template<>
-uint32_t convert_color_to_surface<GrayscaleTraits, os::kRgbaSurfaceFormat>(color_t c, const Palette* palette, const os::SurfaceFormatData* fd) {
+uint32_t convert_color_to_surface<GrayscaleTraits, os::kRgbaSurfaceFormat>(color_t c, const Palette* palette, const ImageSpec& spec, const os::SurfaceFormatData* fd) {
   return
     ((graya_getv(c) << fd->redShift  ) & fd->redMask  ) |
     ((graya_getv(c) << fd->greenShift) & fd->greenMask) |
@@ -54,8 +58,8 @@ uint32_t convert_color_to_surface<GrayscaleTraits, os::kRgbaSurfaceFormat>(color
 }
 
 template<>
-uint32_t convert_color_to_surface<IndexedTraits, os::kRgbaSurfaceFormat>(color_t c0, const Palette* palette, const os::SurfaceFormatData* fd) {
-  color_t c = palette->getEntry(c0);
+uint32_t convert_color_to_surface<IndexedTraits, os::kRgbaSurfaceFormat>(color_t c0, const Palette* palette, const ImageSpec& spec, const os::SurfaceFormatData* fd) {
+  color_t c = (c0 == spec.maskColor() ? 0 : palette->getEntry(c0));
   return
     ((rgba_getr(c) << fd->redShift  ) & fd->redMask  ) |
     ((rgba_getg(c) << fd->greenShift) & fd->greenMask) |
@@ -64,7 +68,7 @@ uint32_t convert_color_to_surface<IndexedTraits, os::kRgbaSurfaceFormat>(color_t
 }
 
 template<>
-uint32_t convert_color_to_surface<BitmapTraits, os::kRgbaSurfaceFormat>(color_t c0, const Palette* palette, const os::SurfaceFormatData* fd) {
+uint32_t convert_color_to_surface<BitmapTraits, os::kRgbaSurfaceFormat>(color_t c0, const Palette* palette, const ImageSpec& spec, const os::SurfaceFormatData* fd) {
   color_t c = palette->getEntry(c0);
   return
     ((rgba_getr(c) << fd->redShift  ) & fd->redMask  ) |
@@ -88,7 +92,7 @@ void convert_image_to_surface_templ(const Image* image, os::Surface* dst,
     for (int u=0; u<w; ++u) {
       ASSERT(src_it != src_end);
 
-      *dst_address = convert_color_to_surface<ImageTraits, os::kRgbaSurfaceFormat>(*src_it, palette, fd);
+      *dst_address = convert_color_to_surface<ImageTraits, os::kRgbaSurfaceFormat>(*src_it, palette, image->spec(), fd);
       ++dst_address;
       ++src_it;
     }
@@ -205,6 +209,12 @@ void convert_image_to_surface(
       ASSERT(false);
       throw std::runtime_error("conversion not supported");
   }
+
+#if LAF_SKIA
+  // Increment SkBitmap generation ID so it's re-uploaded to the GPU
+  // as a texture if it's needed.
+  static_cast<os::SkiaSurface*>(surface)->bitmap().notifyPixelsChanged();
+#endif
 }
 
 } // namespace app

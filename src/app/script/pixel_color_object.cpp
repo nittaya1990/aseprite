@@ -10,6 +10,7 @@
 
 #include "app/script/luacpp.h"
 #include "doc/color.h"
+#include "doc/tile.h"
 
 namespace app {
 namespace script {
@@ -70,6 +71,26 @@ int PixelColor_grayaA(lua_State* L)
   return 1;
 }
 
+int PixelColor_tile(lua_State* L)
+{
+  const int i = lua_tointeger(L, 1);
+  const int f = lua_tointeger(L, 2);
+  lua_pushinteger(L, doc::tile(i, f));
+  return 1;
+}
+
+int PixelColor_tileI(lua_State* L)
+{
+  lua_pushinteger(L, doc::tile_geti(lua_tointeger(L, 1)));
+  return 1;
+}
+
+int PixelColor_tileF(lua_State* L)
+{
+  lua_pushinteger(L, doc::tile_getf(lua_tointeger(L, 1)));
+  return 1;
+}
+
 const luaL_Reg PixelColor_methods[] = {
   { "rgba", PixelColor_rgba },
   { "rgbaR", PixelColor_rgbaR },
@@ -79,6 +100,9 @@ const luaL_Reg PixelColor_methods[] = {
   { "graya", PixelColor_graya },
   { "grayaV", PixelColor_grayaV },
   { "grayaA", PixelColor_grayaA },
+  { "tile", PixelColor_tile },
+  { "tileI", PixelColor_tileI },
+  { "tileF", PixelColor_tileF },
   { nullptr, nullptr }
 };
 
@@ -92,6 +116,12 @@ void register_app_pixel_color_object(lua_State* L)
   lua_pushvalue(L, -2);         // Copy table
   lua_rawset(L, -4);
   luaL_setfuncs(L, PixelColor_methods, 0);
+
+  // Masks for tile flags
+  setfield_uinteger(L, "TILE_XFLIP", doc::tile_f_xflip);
+  setfield_uinteger(L, "TILE_YFLIP", doc::tile_f_yflip);
+  setfield_uinteger(L, "TILE_DFLIP", doc::tile_f_dflip);
+
   lua_pop(L, 2);                // Pop table & app global
 }
 

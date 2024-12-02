@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,11 +13,11 @@
 
 #include "app/color_utils.h"
 #include "app/modules/palettes.h"
-#include "base/clamp.h"
 #include "base/debug.h"
 #include "doc/image.h"
 #include "doc/palette.h"
 #include "doc/primitives.h"
+#include "doc/tile.h"
 #include "gfx/hsl.h"
 #include "gfx/hsv.h"
 #include "gfx/rgb.h"
@@ -30,6 +30,7 @@
 
 namespace app {
 
+using namespace doc;
 using namespace gfx;
 
 // static
@@ -91,6 +92,14 @@ Color Color::fromIndex(int index)
 }
 
 // static
+Color Color::fromTile(doc::tile_t tile)
+{
+  Color color(Color::TileType);
+  color.m_value.tile = tile;
+  return color;
+}
+
+// static
 Color Color::fromImage(PixelFormat pixelFormat, color_t c)
 {
   Color color = app::Color::fromMask();
@@ -115,6 +124,10 @@ Color Color::fromImage(PixelFormat pixelFormat, color_t c)
 
     case IMAGE_INDEXED:
       color = Color::fromIndex(c);
+      break;
+
+    case IMAGE_TILEMAP:
+      color = Color::fromTile(c);
       break;
   }
 
@@ -204,8 +217,8 @@ std::string Color::toString() const
              << std::setprecision(2)
              << std::fixed
              << m_value.hsv.h << ","
-             << base::clamp(m_value.hsv.s*100.0, 0.0, 100.0) << ","
-             << base::clamp(m_value.hsv.v*100.0, 0.0, 100.0) << ","
+             << std::clamp(m_value.hsv.s*100.0, 0.0, 100.0) << ","
+             << std::clamp(m_value.hsv.v*100.0, 0.0, 100.0) << ","
              << m_value.hsv.a << "}";
       break;
 
@@ -214,8 +227,8 @@ std::string Color::toString() const
              << std::setprecision(2)
              << std::fixed
              << m_value.hsl.h << ","
-             << base::clamp(m_value.hsl.s*100.0, 0.0, 100.0) << ","
-             << base::clamp(m_value.hsl.l*100.0, 0.0, 100.0) << ","
+             << std::clamp(m_value.hsl.s*100.0, 0.0, 100.0) << ","
+             << std::clamp(m_value.hsl.l*100.0, 0.0, 100.0) << ","
              << m_value.hsl.a << "}";
       break;
 
@@ -268,8 +281,8 @@ std::string Color::toHumanReadableString(PixelFormat pixelFormat, HumanReadableS
         else {
           result << "HSV "
                  << int(m_value.hsv.h) << "\xc2\xb0 "
-                 << base::clamp(int(m_value.hsv.s*100.0), 0, 100) << "% "
-                 << base::clamp(int(m_value.hsv.v*100.0), 0, 100) << "%";
+                 << std::clamp(int(m_value.hsv.s*100.0), 0, 100) << "% "
+                 << std::clamp(int(m_value.hsv.v*100.0), 0, 100) << "%";
 
           if (pixelFormat == IMAGE_INDEXED)
             result << " Index " << color_utils::color_for_image(*this, IMAGE_INDEXED);
@@ -288,8 +301,8 @@ std::string Color::toHumanReadableString(PixelFormat pixelFormat, HumanReadableS
         else {
           result << "HSL "
                  << int(m_value.hsl.h) << "\xc2\xb0 "
-                 << base::clamp(int(m_value.hsl.s*100.0), 0, 100) << "% "
-                 << base::clamp(int(m_value.hsl.l*100.0), 0, 100) << "%";
+                 << std::clamp(int(m_value.hsl.s*100.0), 0, 100) << "% "
+                 << std::clamp(int(m_value.hsl.l*100.0), 0, 100) << "%";
 
           if (pixelFormat == IMAGE_INDEXED)
             result << " Index " << color_utils::color_for_image(*this, IMAGE_INDEXED);
@@ -358,8 +371,8 @@ std::string Color::toHumanReadableString(PixelFormat pixelFormat, HumanReadableS
         }
         else {
           result << int(m_value.hsv.h) << "\xc2\xb0"
-                 << base::clamp(int(m_value.hsv.s*100.0), 0, 100) << ","
-                 << base::clamp(int(m_value.hsv.v*100.0), 0, 100);
+                 << std::clamp(int(m_value.hsv.s*100.0), 0, 100) << ","
+                 << std::clamp(int(m_value.hsv.v*100.0), 0, 100);
         }
         break;
 
@@ -369,8 +382,8 @@ std::string Color::toHumanReadableString(PixelFormat pixelFormat, HumanReadableS
         }
         else {
           result << int(m_value.hsl.h) << "\xc2\xb0"
-                 << base::clamp(int(m_value.hsl.s*100.0), 0, 100) << ","
-                 << base::clamp(int(m_value.hsl.l*100.0), 0, 100);
+                 << std::clamp(int(m_value.hsl.s*100.0), 0, 100) << ","
+                 << std::clamp(int(m_value.hsl.l*100.0), 0, 100);
         }
         break;
 
@@ -867,10 +880,29 @@ int Color::getIndex() const
     case Color::IndexType:
       return m_value.index;
 
+    case Color::TileType:
+      return doc::tile_geti(m_value.tile);
+
   }
 
   ASSERT(false);
   return -1;
+}
+
+doc::tile_t Color::getTile() const
+{
+  switch (getType()) {
+
+    case Color::IndexType:
+      return m_value.index;
+
+    case Color::TileType:
+      return m_value.tile;
+
+  }
+
+  ASSERT(false);
+  return doc::notile;
 }
 
 int Color::getAlpha() const
@@ -900,6 +932,9 @@ int Color::getAlpha() const
         return 0;
     }
 
+    case Color::TileType:
+      return 255;
+
   }
 
   ASSERT(false);
@@ -908,7 +943,7 @@ int Color::getAlpha() const
 
 void Color::setAlpha(int alpha)
 {
-  alpha = base::clamp(alpha, 0, 255);
+  alpha = std::clamp(alpha, 0, 255);
 
   switch (getType()) {
 

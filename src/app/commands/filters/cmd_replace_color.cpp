@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -22,6 +22,7 @@
 #include "app/commands/new_params.h"
 #include "app/context.h"
 #include "app/find_widget.h"
+#include "app/i18n/strings.h"
 #include "app/ini_file.h"
 #include "app/load_widget.h"
 #include "app/pref/preferences.h"
@@ -71,14 +72,14 @@ private:
   app::Color m_to;
 };
 
-#ifdef ENABLE_UI
-
 static const char* ConfigSection = "ReplaceColor";
 
 class ReplaceColorWindow : public FilterWindow {
 public:
   ReplaceColorWindow(ReplaceColorFilterWrapper& filter, FilterManagerImpl& filterMgr)
-    : FilterWindow("Replace Color", ConfigSection, &filterMgr,
+    : FilterWindow(Strings::replace_color_title().c_str(),
+                   ConfigSection,
+                   &filterMgr,
                    WithChannelsSelector,
                    WithoutTiledCheckBox)
     , m_filter(filter)
@@ -101,16 +102,19 @@ public:
 private:
 
   void onFromChange(const app::Color& color) {
+    stopPreview();
     m_filter.setFrom(color);
     restartPreview();
   }
 
   void onToChange(const app::Color& color) {
+    stopPreview();
     m_filter.setTo(color);
     restartPreview();
   }
 
   void onToleranceChange() {
+    stopPreview();
     m_filter.setTolerance(m_toleranceSlider->getValue());
     restartPreview();
   }
@@ -140,8 +144,6 @@ private:
   ui::Slider* m_toleranceSlider;
 };
 
-#endif  // ENABLE_UI
-
 class ReplaceColorCommand : public CommandWithNewParams<ReplaceColorParams> {
 public:
   ReplaceColorCommand();
@@ -164,9 +166,7 @@ bool ReplaceColorCommand::onEnabled(Context* context)
 
 void ReplaceColorCommand::onExecute(Context* context)
 {
-#ifdef ENABLE_UI
   const bool ui = (params().ui() && context->isUIAvailable());
-#endif
   Site site = context->activeSite();
 
   ReplaceColorFilterWrapper filter(site.layer());
@@ -182,25 +182,20 @@ void ReplaceColorCommand::onExecute(Context* context)
 
   filter.setFrom(Preferences::instance().colorBar.fgColor());
   filter.setTo(Preferences::instance().colorBar.bgColor());
-#ifdef ENABLE_UI
   if (ui)
     filter.setTolerance(get_config_int(ConfigSection, "Tolerance", 0));
-#endif // ENABLE_UI
 
   if (params().from.isSet()) filter.setFrom(params().from());
   if (params().to.isSet())  filter.setTo(params().to());
   if (params().tolerance.isSet()) filter.setTolerance(params().tolerance());
   if (params().channels.isSet()) filterMgr.setTarget(params().channels());
 
-#ifdef ENABLE_UI
   if (ui) {
     ReplaceColorWindow window(filter, filterMgr);
     if (window.doModal())
       set_config_int(ConfigSection, "Tolerance", filter.getTolerance());
   }
-  else
-#endif // ENABLE_UI
-  {
+  else {
     start_filter_worker(&filterMgr);
   }
 }

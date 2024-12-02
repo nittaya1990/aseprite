@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2024  Igara Studio S.A.
 // Copyright (C) 2018  David Capello
 //
 // This program is distributed under the terms of
@@ -19,11 +19,9 @@
 #include "app/modules/gui.h"
 #include "app/tx.h"
 #include "app/ui/timeline/timeline.h"
-#include "base/clamp.h"
 #include "doc/cel.h"
 #include "doc/cels_range.h"
 #include "doc/sprite.h"
-#include "fmt/format.h"
 
 #include <string>
 
@@ -53,7 +51,7 @@ CelOpacityCommand::CelOpacityCommand()
 void CelOpacityCommand::onLoadParams(const Params& params)
 {
   m_opacity = params.get_as<int>("opacity");
-  m_opacity = base::clamp(m_opacity, 0, 255);
+  m_opacity = std::clamp(m_opacity, 0, 255);
 }
 
 bool CelOpacityCommand::onEnabled(Context* context)
@@ -74,15 +72,13 @@ void CelOpacityCommand::onExecute(Context* context)
     return;
 
   {
-    Tx tx(writer.context(), "Set Cel Opacity");
+    Tx tx(writer, "Set Cel Opacity");
 
     // TODO the range of selected cels should be in app::Site.
     DocRange range;
 
-#ifdef ENABLE_UI
     if (context->isUIAvailable())
       range = App::instance()->timeline()->range();
-#endif
 
     if (!range.enabled()) {
       range.startRange(layer, cel->frame(), DocRange::kCels);
@@ -102,17 +98,13 @@ void CelOpacityCommand::onExecute(Context* context)
     tx.commit();
   }
 
-#ifdef ENABLE_UI
-  if (context->isUIAvailable())
-    update_screen_for_document(writer.document());
-#endif
+  update_screen_for_document(writer.document());
 }
 
 std::string CelOpacityCommand::onGetFriendlyName() const
 {
-  return fmt::format(getBaseFriendlyName(),
-                     m_opacity,
-                     int(100.0 * m_opacity / 255.0));
+  return Strings::commands_CelOpacity(m_opacity,
+                                      int(100.0 * m_opacity / 255.0));
 }
 
 Command* CommandFactory::createCelOpacityCommand()

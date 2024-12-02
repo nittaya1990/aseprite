@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2019-2020  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -43,7 +43,10 @@ bool BackgroundFromLayerCommand::onEnabled(Context* context)
     // Doesn't have a background layer
     !context->checkFlags(ContextFlags::HasBackgroundLayer) &&
     // Isn't a reference layer
-    !context->checkFlags(ContextFlags::ActiveLayerIsReference);
+    !context->checkFlags(ContextFlags::ActiveLayerIsReference) &&
+    // Isn't a tilemap layer
+    // TODO support background tilemaps
+    !context->checkFlags(ContextFlags::ActiveLayerIsTilemap);
 }
 
 void BackgroundFromLayerCommand::onExecute(Context* context)
@@ -52,15 +55,12 @@ void BackgroundFromLayerCommand::onExecute(Context* context)
   Doc* document(writer.document());
 
   {
-    Tx tx(writer.context(), friendlyName());
+    Tx tx(writer, friendlyName());
     tx(new cmd::BackgroundFromLayer(static_cast<LayerImage*>(writer.layer())));
     tx.commit();
   }
 
-#ifdef ENABLE_UI
-  if (context->isUIAvailable())
-    update_screen_for_document(document);
-#endif
+  update_screen_for_document(document);
 }
 
 Command* CommandFactory::createBackgroundFromLayerCommand()

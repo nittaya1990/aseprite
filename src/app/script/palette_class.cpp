@@ -76,13 +76,13 @@ int Palette_new(lua_State* L)
         std::string absFn = base::get_absolute_path(fromFile);
         lua_pop(L, 1);
 
-        if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, true))
+        if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, ResourceType::File))
           return luaL_error(L, "script doesn't have access to open file %s",
                             absFn.c_str());
 
-        Palette* pal = load_palette(absFn.c_str());
+        auto pal = load_palette(absFn.c_str());
         if (pal)
-          push_new<PaletteObj>(L, nullptr, pal);
+          push_new<PaletteObj>(L, nullptr, pal.release());
         else
           lua_pushnil(L);
         return 1;
@@ -105,13 +105,13 @@ int Palette_new(lua_State* L)
         if (!idAndPaths[id].empty()) {
           std::string absFn = base::get_absolute_path(idAndPaths[id]);
 
-          if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, true))
+          if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, ResourceType::File))
             return luaL_error(L, "script doesn't have access to open file %s",
                               absFn.c_str());
 
-          Palette* pal = load_palette(absFn.c_str());
+          auto pal = load_palette(absFn.c_str());
           if (pal)
-            push_new<PaletteObj>(L, nullptr, pal);
+            push_new<PaletteObj>(L, nullptr, pal.release());
           else
             lua_pushnil(L);
           return 1;
@@ -165,7 +165,7 @@ int Palette_resize(lua_State* L)
     newPal.resize(ncolors);
 
     if (*pal != newPal) {
-      Tx tx;
+      Tx tx(sprite);
       tx(new cmd::SetPalette(sprite, pal->frame(), &newPal));
       tx.commit();
     }
@@ -212,7 +212,7 @@ int Palette_setColor(lua_State* L)
     Palette newPal(*pal);
     newPal.setEntry(i, docColor);
 
-    Tx tx;
+    Tx tx(sprite);
     tx(new cmd::SetPalette(sprite, pal->frame(), &newPal));
     tx.commit();
   }
@@ -238,12 +238,17 @@ int Palette_saveAs(lua_State* L)
   auto obj = get_obj<PaletteObj>(L, 1);
   auto pal = obj->palette(L);
   const char* fn = luaL_checkstring(L, 2);
+  Sprite* sprite = obj->sprite(L);
+
   if (fn) {
     std::string absFn = base::get_absolute_path(fn);
-    if (!ask_access(L, absFn.c_str(), FileAccessMode::Write, true))
+    if (!ask_access(L, absFn.c_str(), FileAccessMode::Write, ResourceType::File))
       return luaL_error(L, "script doesn't have access to write file %s",
                         absFn.c_str());
-    save_palette(absFn.c_str(), pal, pal->size());
+    save_palette(absFn.c_str(),
+                 pal,
+                 pal->size(),
+                 (sprite ? sprite->colorSpace(): nullptr));
   }
   return 0;
 }

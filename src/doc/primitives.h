@@ -1,5 +1,5 @@
 // Aseprite Document Library
-// Copyright (c) 2018-2021 Igara Studio S.A.
+// Copyright (c) 2018-2023 Igara Studio S.A.
 // Copyright (c) 2001-2016 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -17,7 +17,6 @@
 namespace doc {
   class Brush;
   class Image;
-  class Palette;
   class Remap;
 
   color_t get_pixel(const Image* image, int x, int y);
@@ -27,6 +26,7 @@ namespace doc {
 
   void copy_image(Image* dst, const Image* src);
   void copy_image(Image* dst, const Image* src, int x, int y);
+  void copy_image(Image* dst, const Image* src, const gfx::Region& rgn);
   Image* crop_image(const Image* image, int x, int y, int w, int h, color_t bg, const ImageBufferPtr& buffer = ImageBufferPtr());
   Image* crop_image(const Image* image, const gfx::Rect& bounds, color_t bg, const ImageBufferPtr& buffer = ImageBufferPtr());
   void rotate_image(const Image* src, Image* dst, int angle);
@@ -46,11 +46,16 @@ namespace doc {
 
   int count_diff_between_images(const Image* i1, const Image* i2);
   bool is_same_image(const Image* i1, const Image* i2);
+  bool is_same_image_slow(const Image* i1, const Image* i2);
 
   void remap_image(Image* image, const Remap& remap);
 
   uint32_t calculate_image_hash(const Image* image,
                                 const gfx::Rect& bounds);
+
+  // Sets RGB values to 0 when alpha=0 (to match images with alpha=0
+  // in tilesets/calculate_image_hash)
+  void preprocess_transparent_pixels(Image* image);
 
 } // namespace doc
 

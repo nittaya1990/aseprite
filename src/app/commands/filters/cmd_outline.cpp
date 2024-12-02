@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 //
 // This program is distributed under the terms of
 // the End-User License Agreement for Aseprite.
@@ -76,8 +76,6 @@ private:
   app::Color m_bgColor;
 };
 
-#ifdef ENABLE_UI
-
 static const char* ConfigSection = "Outline";
 
 class OutlineWindow : public FilterWindow {
@@ -125,7 +123,7 @@ private:
     }
     m_panel.outlineType()->setSelectedItem(commonMatrix, false);
 
-    auto theme = static_cast<SkinTheme*>(this->theme());
+    auto theme = SkinTheme::get(this);
     auto emptyIcon = theme->parts.outlineEmptyPixel();
     auto pixelIcon = theme->parts.outlineFullPixel();
 
@@ -137,21 +135,26 @@ private:
   }
 
   void onColorChange(const app::Color& color) {
+    stopPreview();
     m_filter.color(color);
     restartPreview();
   }
 
   void onBgColorChange(const app::Color& color) {
+    stopPreview();
     m_filter.bgColor(color);
     restartPreview();
   }
 
   void onPlaceChange(OutlineFilter::Place place) {
+    stopPreview();
     m_filter.place(place);
     restartPreview();
   }
 
   void onMatrixTypeChange() {
+    stopPreview();
+
     OutlineFilter::Matrix matrix = OutlineFilter::Matrix::None;
     switch (m_panel.outlineType()->selectedItem()) {
       case CIRCLE: matrix = OutlineFilter::Matrix::Circle; break;
@@ -165,6 +168,8 @@ private:
   }
 
   void onMatrixPixelChange(const int index) {
+    stopPreview();
+
     int matrix = (int)m_filter.matrix();
     matrix ^= (1 << (8-index));
     m_filter.matrix((OutlineFilter::Matrix)matrix);
@@ -179,8 +184,6 @@ private:
   OutlineFilterWrapper& m_filter;
   gen::Outline m_panel;
 };
-
-#endif  // ENABLE_UI
 
 class OutlineCommand : public CommandWithNewParams<OutlineParams> {
 public:
@@ -204,9 +207,7 @@ bool OutlineCommand::onEnabled(Context* context)
 
 void OutlineCommand::onExecute(Context* context)
 {
-#ifdef ENABLE_UI
   const bool ui = (params().ui() && context->isUIAvailable());
-#endif
 
   Site site = context->activeSite();
 
@@ -220,7 +221,6 @@ void OutlineCommand::onExecute(Context* context)
     filter.bgColor(app::Color::fromMask());
   }
 
-#ifdef ENABLE_UI
   if (ui) {
     filter.place((OutlineFilter::Place)get_config_int(ConfigSection, "Place", int(OutlineFilter::Place::Outside)));
     filter.matrix((OutlineFilter::Matrix)get_config_int(ConfigSection, "Matrix", int(OutlineFilter::Matrix::Circle)));
@@ -230,7 +230,6 @@ void OutlineCommand::onExecute(Context* context)
       .document(site.document());
     filter.tiledMode(docPref.tiled.mode());
   }
-#endif // ENABLE_UI
 
   if (params().place.isSet()) filter.place(params().place());
   if (params().matrix.isSet()) filter.matrix(params().matrix());
@@ -250,7 +249,6 @@ void OutlineCommand::onExecute(Context* context)
 
   if (params().channels.isSet()) filterMgr.setTarget(params().channels());
 
-#ifdef ENABLE_UI
   if (ui) {
     OutlineWindow window(filter, filterMgr);
     if (window.doModal()) {
@@ -258,9 +256,7 @@ void OutlineCommand::onExecute(Context* context)
       set_config_int(ConfigSection, "Matrix", int(filter.matrix()));
     }
   }
-  else
-#endif // ENABLE_UI
-  {
+  else {
     start_filter_worker(&filterMgr);
   }
 }

@@ -1,5 +1,5 @@
 // Aseprite UI Library
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2022  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -49,9 +49,6 @@ namespace ui {
     virtual void onChange();
     virtual void onDoubleClickItem();
 
-    int getChildIndex(Widget* item);
-    Widget* getChildByIndex(int index);
-
     int advanceIndexThroughVisibleItems(
       int startIndex, int delta, const bool loop);
 
@@ -69,6 +66,10 @@ namespace ui {
     // items in case that the user is Ctrl+clicking items several
     // items at the same time.
     std::vector<bool> m_states;
+
+  private:
+    // Finds the parent ListItem that contains the specified descendant.
+    ListItem* findParentListItem(Widget* descendant);
   };
 
 } // namespace ui

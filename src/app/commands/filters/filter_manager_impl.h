@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2019-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,6 +14,7 @@
 #include "app/site.h"
 #include "app/tx.h"
 #include "base/exception.h"
+#include "base/task.h"
 #include "doc/image_impl.h"
 #include "doc/image_ref.h"
 #include "doc/pixel_format.h"
@@ -62,7 +63,7 @@ namespace app {
   public:
     // Interface to report progress to the user and take input from him
     // to cancel the whole process.
-    class IProgressDelegate {
+    class IProgressDelegate {   // TODO replace this with base::task_token
     public:
       virtual ~IProgressDelegate() { }
 
@@ -82,9 +83,7 @@ namespace app {
     void setCelsTarget(CelsTarget celsTarget);
 
     void begin();
-#ifdef ENABLE_UI
     void beginForPreview();
-#endif
     void end();
     bool applyStep();
     void applyToTarget();
@@ -100,11 +99,10 @@ namespace app {
     doc::Image* destinationImage() const { return m_dst.get(); }
     gfx::Point position() const { return gfx::Point(0, 0); }
 
-#ifdef ENABLE_UI
     // Updates the current editor to show the progress of the preview.
     void flush();
     void disablePreview();
-#endif
+    void setTaskToken(base::task_token& token);
 
     // FilterManager implementation
     doc::PixelFormat pixelFormat() const override;
@@ -119,6 +117,7 @@ namespace app {
     int y() const override { return m_bounds.y+m_row; }
     bool isFirstRow() const override { return m_row == 0; }
     bool isMaskActive() const override;
+    base::task_token& taskToken() const override;
 
     // FilterIndexedData implementation
     const doc::Palette* getPalette() const override;
@@ -138,9 +137,7 @@ namespace app {
     void restoreSpritePalette();
     void applyToPaletteIfNeeded();
 
-#ifdef ENABLE_UI
     void redrawColorPalette();
-#endif
 
     ContextReader m_reader;
     std::unique_ptr<ContextWriter> m_writer;
@@ -150,9 +147,7 @@ namespace app {
     doc::ImageRef m_src;
     doc::ImageRef m_dst;
     int m_row;
-#ifdef ENABLE_UI
     int m_nextRowToFlush;
-#endif
     gfx::Rect m_bounds;
     doc::Mask* m_mask;
     std::unique_ptr<doc::Mask> m_previewMask;
@@ -163,6 +158,8 @@ namespace app {
     CelsTarget m_celsTarget;
     std::unique_ptr<doc::Palette> m_oldPalette;
     std::unique_ptr<Tx> m_tx;
+    base::task_token m_noToken;
+    base::task_token* m_taskToken;
 
     // Hooks
     float m_progressBase;

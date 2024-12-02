@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2023  Igara Studio S.A.
 // Copyright (C) 2016  David Capello
 //
 // This program is distributed under the terms of
@@ -42,6 +42,7 @@ public:
   // modify the active tool.
   void newToolSelectedInToolBar(Tool* tool);
   void newQuickToolSelectedFromEditor(Tool* tool);
+  void brushChanged();
   void regularTipProximity();
   void eraserTipProximity();
   void pressButton(const Pointer& pointer);
@@ -53,6 +54,8 @@ public:
     const InkType inkType,
     const app::Color& color) const;
 
+  void setAllowQuickToolChanges(bool state);
+
 private:
   static bool isToolAffectedByRightClickMode(Tool* tool);
 
@@ -61,6 +64,11 @@ private:
   // Quick tool in the active sprite editor (activated by keyboard
   // shortuts).
   Tool* m_quickTool;
+
+  // This can be disable temporarily in case we want to use an Editor
+  // in "preview only mode" (e.g. when we're previewing a filter we
+  // want to disable the Ctrl key to change to the Move tool).
+  bool m_allowQuickToolChanges;
 
   // Special tool by stylus proximity.
   bool m_rightClick;

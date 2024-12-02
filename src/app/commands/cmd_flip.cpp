@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -22,7 +22,6 @@
 #include "app/doc_api.h"
 #include "app/doc_range.h"
 #include "app/i18n/strings.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/tools/tool_box.h"
 #include "app/tx.h"
@@ -40,7 +39,6 @@
 #include "doc/layer.h"
 #include "doc/mask.h"
 #include "doc/sprite.h"
-#include "fmt/format.h"
 #include "gfx/size.h"
 
 
@@ -75,7 +73,6 @@ void FlipCommand::onExecute(Context* ctx)
 
   CelList cels;
   if (m_flipMask) {
-#ifdef ENABLE_UI
     // If we want to flip the visible mask we can go to
     // MovingPixelsState (even when the range is enabled, because now
     // PixelsMovement support ranges).
@@ -85,11 +82,11 @@ void FlipCommand::onExecute(Context* ctx)
       if (tools::Tool* tool = App::instance()->toolBox()
           ->getToolById(tools::WellKnownTools::RectangularMarquee)) {
         ToolBar::instance()->selectTool(tool);
-        current_editor->startFlipTransformation(m_flipType);
+        if (auto editor = Editor::activeEditor())
+          editor->startFlipTransformation(m_flipType);
         return;
       }
     }
-#endif
 
     auto range = site.range();
     if (range.enabled()) {
@@ -102,12 +99,10 @@ void FlipCommand::onExecute(Context* ctx)
     }
 
     if (cels.empty()) {
-#ifdef ENABLE_UI
       if (ctx->isUIAvailable()) {
         StatusBar::instance()->showTip(
           1000, Strings::statusbar_tips_all_layers_are_locked());
       }
-#endif // ENABLE_UI
       return;
     }
   }
@@ -120,7 +115,7 @@ void FlipCommand::onExecute(Context* ctx)
   ContextWriter writer(ctx);
   Doc* document = writer.document();
   Sprite* sprite = writer.sprite();
-  Tx tx(ctx, friendlyName());
+  Tx tx(writer, friendlyName());
   DocApi api = document->getApi(tx);
 
   Mask* mask = document->mask();
@@ -154,7 +149,7 @@ void FlipCommand::onExecute(Context* ctx)
         else
           api.flipImage(image, flipBounds, m_flipType);
 
-        if (cel->layer()->isTransparent())
+        if (site.shouldTrimCel(cel))
           tx(new cmd::TrimCel(cel));
       }
       // When the mask is bigger than the cel bounds, we have to
@@ -235,10 +230,7 @@ void FlipCommand::onExecute(Context* ctx)
 
   tx.commit();
 
-#ifdef ENABLE_UI
-  if (ctx->isUIAvailable())
-    update_screen_for_document(document);
-#endif
+  update_screen_for_document(document);
 }
 
 std::string FlipCommand::onGetFriendlyName() const
@@ -256,7 +248,7 @@ std::string FlipCommand::onGetFriendlyName() const
   else
     orientation = Strings::commands_Flip_Vertically();
 
-  return fmt::format(getBaseFriendlyName(), content, orientation);
+  return Strings::commands_Flip(content, orientation);
 }
 
 Command* CommandFactory::createFlipCommand()

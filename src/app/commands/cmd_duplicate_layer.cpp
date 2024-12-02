@@ -14,7 +14,6 @@
 #include "app/context_access.h"
 #include "app/doc_undo.h"
 #include "app/doc_api.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/tx.h"
 #include "app/ui/editor/editor.h"
@@ -50,7 +49,7 @@ void DuplicateLayerCommand::onExecute(Context* context)
   Doc* document = writer.document();
 
   {
-    Tx tx(writer.context(), "Layer Duplication");
+    Tx tx(writer, "Layer Duplication");
     LayerImage* sourceLayer = static_cast<LayerImage*>(writer.layer());
     DocApi api = document->getApi(tx);
     api.duplicateLayerAfter(sourceLayer,

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -19,7 +19,6 @@
 #include "app/find_widget.h"
 #include "app/load_widget.h"
 #include "app/pref/preferences.h"
-#include "base/clamp.h"
 #include "base/file_handle.h"
 #include "base/memory.h"
 #include "doc/doc.h"
@@ -28,10 +27,12 @@
 #include <csetjmp>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 
 #include "jpeg_options.xml.h"
 
 #include "jpeglib.h"
+#include "TinyEXIF.h"
 
 namespace app {
 
@@ -65,7 +66,8 @@ class JpegFormat : public FileFormat {
       FILE_SUPPORT_RGB |
       FILE_SUPPORT_GRAY |
       FILE_SUPPORT_SEQUENCES |
-      FILE_SUPPORT_GET_FORMAT_OPTIONS;
+      FILE_SUPPORT_GET_FORMAT_OPTIONS |
+      FILE_ENCODE_ABSTRACT_IMAGE;
   }
 
   bool onLoad(FileOp* fop) override;
@@ -177,12 +179,24 @@ bool JpegFormat::onLoad(FileOp* fop)
   // Start decompressor.
   jpeg_start_decompress(&dinfo);
 
+  // Get orientation:
+  TinyEXIF::EXIFInfo info;
+  int orientation = 0;
+  {
+    std::ifstream istream(fop->filename(), std::ifstream::in | std::ifstream::binary);
+    // Get EXIF information:
+    TinyEXIF::EXIFInfo info(istream);
+    if (info.Fields != 0)
+      orientation = info.Orientation;
+  }
+  const int outputW = (orientation < 5 ? dinfo.output_width : dinfo.output_height);
+  const int outputH = (orientation < 5 ? dinfo.output_height : dinfo.output_width);
   // Create the image.
-  Image* image = fop->sequenceImage(
+  ImageRef image = fop->sequenceImageToLoad(
     (dinfo.out_color_space == JCS_RGB ? IMAGE_RGB:
                                         IMAGE_GRAYSCALE),
-    dinfo.output_width,
-    dinfo.output_height);
+    outputW,
+    outputH);
   if (!image) {
     jpeg_destroy_decompress(&dinfo);
     return false;
@@ -217,6 +231,61 @@ bool JpegFormat::onLoad(FileOp* fop)
   while (dinfo.output_scanline < dinfo.output_height) {
     num_scanlines = jpeg_read_scanlines(&dinfo, buffer, buffer_height);
 
+    // Orientation function/variables adjust
+    std::function<int(int)> start_dst_x;
+    std::function<int(int)> start_dst_y;
+    int next_addr_increment = 1;
+    switch (orientation) {
+      case 2:
+        start_dst_x = [image](int) { return image->width() - 1; };
+        start_dst_y = [dinfo](int y) {
+          return dinfo.output_scanline - 1 + y; };
+        next_addr_increment = -1;
+        break;
+      case 3:
+        start_dst_x = [image](int) { return image->width() - 1; };
+        start_dst_y = [image, dinfo](int y) {
+          return image->height() - dinfo.output_scanline + y; };
+        next_addr_increment = -1;
+        break;
+      case 4:
+        start_dst_x = [](int) { return 0; };
+        start_dst_y = [image, dinfo](int y) {
+          return image->height() - dinfo.output_scanline - y; };
+        next_addr_increment = 1;
+        break;
+      case 5:
+        start_dst_x = [dinfo](int y) {
+          return dinfo.output_scanline - 1 + y; };
+        start_dst_y = [](int) { return 0; };
+        next_addr_increment = image->width();
+        break;
+      case 6:
+        start_dst_x = [image, dinfo](int y) {
+          return image->width() - dinfo.output_scanline - y; };
+        start_dst_y = [](int) { return 0; };
+        next_addr_increment = image->width();
+        break;
+      case 7:
+        start_dst_x = [image, dinfo](int y) {
+          return image->width() - dinfo.output_scanline - y; };
+        start_dst_y = [image](int) { return image->height() - 1; };
+        next_addr_increment = -image->width();
+        break;
+      case 8:
+        start_dst_x = [dinfo](int y) {
+          return dinfo.output_scanline - 1 + y; };
+        start_dst_y = [image](int) { return image->height() - 1; };
+        next_addr_increment = -image->width();
+        break;
+      default:
+        start_dst_x = [](int) { return 0; };
+        start_dst_y = [dinfo](int y) {
+          return dinfo.output_scanline - 1 + y; };
+        next_addr_increment = 1;
+        break;
+    }
+
     // RGB
     if (image->pixelFormat() == IMAGE_RGB) {
       uint8_t* src_address;
@@ -225,13 +294,14 @@ bool JpegFormat::onLoad(FileOp* fop)
 
       for (y=0; y<(int)num_scanlines; y++) {
         src_address = ((uint8_t**)buffer)[y];
-        dst_address = (uint32_t*)image->getPixelAddress(0, dinfo.output_scanline-1+y);
+        dst_address = (uint32_t*)image->getPixelAddress(start_dst_x(y), start_dst_y(y));
 
-        for (x=0; x<image->width(); x++) {
+        for (x=0; x<dinfo.output_width; x++) {
           r = *(src_address++);
           g = *(src_address++);
           b = *(src_address++);
-          *(dst_address++) = rgba(r, g, b, 255);
+          *dst_address = rgba(r, g, b, 255);
+          dst_address += next_addr_increment;
         }
       }
     }
@@ -243,10 +313,12 @@ bool JpegFormat::onLoad(FileOp* fop)
 
       for (y=0; y<(int)num_scanlines; y++) {
         src_address = ((uint8_t**)buffer)[y];
-        dst_address = (uint16_t*)image->getPixelAddress(0, dinfo.output_scanline-1+y);
+        dst_address = (uint16_t*)image->getPixelAddress(start_dst_x(y), start_dst_y(y));
 
-        for (x=0; x<image->width(); x++)
-          *(dst_address++) = graya(*(src_address++), 255);
+        for (x=0; x<dinfo.output_width; x++) {
+          *dst_address = graya(*(src_address++), 255);
+          dst_address += next_addr_increment;
+        }
       }
     }
 
@@ -353,12 +425,13 @@ bool JpegFormat::onSave(FileOp* fop)
 {
   struct jpeg_compress_struct cinfo;
   struct error_mgr jerr;
-  const Image* image = fop->sequenceImage();
+  const FileAbstractImage* img = fop->abstractImageToSave();
+  const ImageSpec spec = img->spec();
   JSAMPARRAY buffer;
   JDIMENSION buffer_height;
   const auto jpeg_options = std::static_pointer_cast<JpegOptions>(fop->formatOptions());
   const int qualityValue =
-    (jpeg_options ? (int)base::clamp(100.0f * jpeg_options->quality, 0.f, 100.f):
+    (jpeg_options ? (int)std::clamp(100.0f * jpeg_options->quality, 0.f, 100.f):
                     100);
 
   int c;
@@ -378,10 +451,10 @@ bool JpegFormat::onSave(FileOp* fop)
   jpeg_stdio_dest(&cinfo, file);
 
   // SET parameters for compression.
-  cinfo.image_width = image->width();
-  cinfo.image_height = image->height();
+  cinfo.image_width = spec.width();
+  cinfo.image_height = spec.height();
 
-  if (image->pixelFormat() == IMAGE_GRAYSCALE) {
+  if (spec.colorMode() == ColorMode::GRAYSCALE) {
     cinfo.input_components = 1;
     cinfo.in_color_space = JCS_GRAYSCALE;
   }
@@ -428,15 +501,15 @@ bool JpegFormat::onSave(FileOp* fop)
   // Write each scan line.
   while (cinfo.next_scanline < cinfo.image_height) {
     // RGB
-    if (image->pixelFormat() == IMAGE_RGB) {
+    if (spec.colorMode() == ColorMode::RGB) {
       uint32_t* src_address;
       uint8_t* dst_address;
       int x, y;
       for (y=0; y<(int)buffer_height; y++) {
-        src_address = (uint32_t*)image->getPixelAddress(0, cinfo.next_scanline+y);
+        src_address = (uint32_t*)img->getScanline(cinfo.next_scanline+y);
         dst_address = ((uint8_t**)buffer)[y];
 
-        for (x=0; x<image->width(); ++x) {
+        for (x=0; x<spec.width(); ++x) {
           c = *(src_address++);
           *(dst_address++) = rgba_getr(c);
           *(dst_address++) = rgba_getg(c);
@@ -450,9 +523,9 @@ bool JpegFormat::onSave(FileOp* fop)
       uint8_t* dst_address;
       int x, y;
       for (y=0; y<(int)buffer_height; y++) {
-        src_address = (uint16_t*)image->getPixelAddress(0, cinfo.next_scanline+y);
+        src_address = (uint16_t*)img->getScanline(cinfo.next_scanline+y);
         dst_address = ((uint8_t**)buffer)[y];
-        for (x=0; x<image->width(); ++x)
+        for (x=0; x<spec.width(); ++x)
           *(dst_address++) = graya_getv(*(src_address++));
       }
     }
@@ -527,7 +600,6 @@ void JpegFormat::saveColorSpace(FileOp* fop, jpeg_compress_struct* cinfo,
 FormatOptionsPtr JpegFormat::onAskUserForFormatOptions(FileOp* fop)
 {
   auto opts = fop->formatOptionsOfDocument<JpegOptions>();
-#ifdef ENABLE_UI
   if (fop->context() && fop->context()->isUIAvailable()) {
     try {
       auto& pref = Preferences::instance();
@@ -556,7 +628,6 @@ FormatOptionsPtr JpegFormat::onAskUserForFormatOptions(FileOp* fop)
       return std::shared_ptr<JpegOptions>(0);
     }
   }
-#endif // ENABLE_UI
   return opts;
 }
 

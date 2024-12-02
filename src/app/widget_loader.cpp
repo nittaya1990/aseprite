@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -17,11 +17,13 @@
 #include "app/i18n/strings.h"
 #include "app/modules/gui.h"
 #include "app/resource_finder.h"
+#include "app/ui/alpha_slider.h"
 #include "app/ui/button_set.h"
 #include "app/ui/color_button.h"
 #include "app/ui/drop_down_button.h"
 #include "app/ui/expr_entry.h"
 #include "app/ui/icon_button.h"
+#include "app/ui/mini_help_button.h"
 #include "app/ui/search_entry.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/widget_not_found.h"
@@ -33,7 +35,7 @@
 #include "os/system.h"
 #include "ui/ui.h"
 
-#include "tinyxml.h"
+#include "tinyxml2.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -43,11 +45,12 @@
 
 namespace app {
 
-using namespace ui;
 using namespace app::skin;
+using namespace tinyxml2;
+using namespace ui;
 
 static int convert_align_value_to_flags(const char *value);
-static int int_attr(const TiXmlElement* elem, const char* attribute_name, int default_value);
+static int int_attr(const XMLElement* elem, const char* attribute_name, int default_value);
 
 WidgetLoader::WidgetLoader()
   : m_tooltipManager(NULL)
@@ -95,12 +98,12 @@ Widget* WidgetLoader::loadWidgetFromXmlFile(
   m_tooltipManager = NULL;
   m_xmlTranslator.setStringIdPrefix(widgetId.c_str());
 
-  XmlDocumentRef doc(open_xml(xmlFilename));
-  TiXmlHandle handle(doc.get());
+  XMLDocumentRef doc = open_xml(xmlFilename);
+  XMLHandle handle(doc.get());
 
   // Search the requested widget.
-  TiXmlElement* xmlElement = handle
-    .FirstChild("gui")
+  XMLElement* xmlElement = handle
+    .FirstChildElement("gui")
     .FirstChildElement().ToElement();
 
   while (xmlElement) {
@@ -117,7 +120,7 @@ Widget* WidgetLoader::loadWidgetFromXmlFile(
   return widget;
 }
 
-Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget* root, Widget* parent, Widget* widget)
+Widget* WidgetLoader::convertXmlElementToWidget(const XMLElement* elem, Widget* root, Widget* parent, Widget* widget)
 {
   const std::string elem_name = elem->Value();
 
@@ -231,6 +234,10 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
     bool editable = bool_attr(elem, "editable", false);
     if (editable)
       ((ComboBox*)widget)->setEditable(true);
+
+    const char* suffix = elem->Attribute("suffix");
+    if (suffix)
+      ((ComboBox*)widget)->getEntryWidget()->setSuffix(suffix);
   }
   else if (elem_name == "entry" ||
            elem_name == "expr") {
@@ -260,8 +267,8 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
     bool same_width_columns = bool_attr(elem, "same_width_columns", false);
 
     if (columns != NULL) {
-      widget = new Grid(strtol(columns, NULL, 10),
-                        same_width_columns);
+      widget = new ui::Grid(strtol(columns, NULL, 10),
+                            same_width_columns);
     }
   }
   else if (elem_name == "label") {
@@ -394,18 +401,28 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
   else if (elem_name == "slider") {
     const char *min = elem->Attribute("min");
     const char *max = elem->Attribute("max");
-    int min_value = min != NULL ? strtol(min, NULL, 10): 0;
-    int max_value = max != NULL ? strtol(max, NULL, 10): 0;
+    const bool readonly = bool_attr(elem, "readonly", false);
+    int min_value = (min ? strtol(min, nullptr, 10): 0);
+    int max_value = (max ? strtol(max, nullptr, 10): 0);
 
     widget = new Slider(min_value, max_value, min_value);
+    static_cast<Slider*>(widget)->setReadOnly(readonly);
+  }
+  else if (elem_name == "alphaslider" || elem_name == "opacityslider") {
+    const bool readonly = bool_attr(elem, "readonly", false);
+    widget = new AlphaSlider(0, (elem_name == "alphaslider"
+                                 ? AlphaSlider::Type::ALPHA
+                                 : AlphaSlider::Type::OPACITY));
+    static_cast<AlphaSlider*>(widget)->setReadOnly(readonly);
   }
   else if (elem_name == "textbox") {
+    const char* text = (elem->GetText() ? elem->GetText(): "");
     bool wordwrap = bool_attr(elem, "wordwrap", false);
 
     if (!widget)
-      widget = new TextBox(elem->GetText(), 0);
+      widget = new TextBox(text, 0);
     else
-      widget->setText(elem->GetText());
+      widget->setText(text);
 
     if (wordwrap)
       widget->setAlign(widget->align() | WORDWRAP);
@@ -418,12 +435,20 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
     if (!widget) {
       bool desktop = bool_attr(elem, "desktop", false);
 
-      if (desktop)
+      if (desktop) {
         widget = new Window(Window::DesktopWindow);
-      else if (elem->Attribute("text"))
+      }
+      else if (elem->Attribute("text")) {
         widget = new Window(Window::WithTitleBar, m_xmlTranslator(elem, "text"));
-      else
+      }
+      else {
         widget = new Window(Window::WithoutTitleBar);
+      }
+    }
+
+    if (const char* help = elem->Attribute("help")) {
+      auto* helpButton = new MiniHelpButton(help);
+      widget->addChild(helpButton);
     }
   }
   else if (elem_name == "colorpicker") {
@@ -497,14 +522,16 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
 
         try {
           os::SurfaceRef sur = os::instance()->loadRgbaSurface(rf.filename().c_str());
-          widget = new ImageView(sur, 0);
+          if (sur) {
+            sur->setImmutable();
+            widget = new ImageView(sur, 0);
+          }
         }
         catch (...) {
           throw base::Exception("Error loading %s file", file);
         }
       }
-
-      if (icon) {
+      else if (icon) {
         SkinPartPtr part = SkinTheme::instance()->getPartById(std::string(icon));
         if (part) {
           widget = new ImageView(part->bitmapRef(0), 0);
@@ -525,7 +552,7 @@ Widget* WidgetLoader::convertXmlElementToWidget(const TiXmlElement* elem, Widget
   return widget;
 }
 
-void WidgetLoader::fillWidgetWithXmlElementAttributes(const TiXmlElement* elem, Widget* root, Widget* widget)
+void WidgetLoader::fillWidgetWithXmlElementAttributes(const XMLElement* elem, Widget* root, Widget* widget)
 {
   const char* id        = elem->Attribute("id");
   const char* tooltip_dir = elem->Attribute("tooltip_dir");
@@ -633,14 +660,12 @@ void WidgetLoader::fillWidgetWithXmlElementAttributes(const TiXmlElement* elem, 
     const int maxh = (maxheight ? strtol(maxheight, NULL, 10): 0);
     widget->InitTheme.connect(
       [widget, minw, minh, maxw, maxh]{
-        widget->setMinSize(gfx::Size(0, 0));
-        widget->setMaxSize(gfx::Size(std::numeric_limits<int>::max(),
-                                     std::numeric_limits<int>::max()));
+        widget->resetMinSize();
+        widget->resetMaxSize();
         const gfx::Size reqSize = widget->sizeHint();
-        widget->setMinSize(
+        widget->setMinMaxSize(
           gfx::Size((minw > 0 ? guiscale()*minw: reqSize.w),
-                    (minh > 0 ? guiscale()*minh: reqSize.h)));
-        widget->setMaxSize(
+                    (minh > 0 ? guiscale()*minh: reqSize.h)),
           gfx::Size((maxw > 0 ? guiscale()*maxw: std::numeric_limits<int>::max()),
                     (maxh > 0 ? guiscale()*maxh: std::numeric_limits<int>::max())));
       });
@@ -650,7 +675,7 @@ void WidgetLoader::fillWidgetWithXmlElementAttributes(const TiXmlElement* elem, 
     std::string styleIdStr = styleid;
     widget->InitTheme.connect(
       [widget, styleIdStr]{
-        SkinTheme* theme = static_cast<SkinTheme*>(widget->theme());
+        auto theme = SkinTheme::get(widget);
         ui::Style* style = theme->getStyleById(styleIdStr);
         if (style)
           widget->setStyle(style);
@@ -664,7 +689,7 @@ void WidgetLoader::fillWidgetWithXmlElementAttributes(const TiXmlElement* elem, 
   widget->initTheme();
 }
 
-void WidgetLoader::fillWidgetWithXmlElementAttributesWithChildren(const TiXmlElement* elem, ui::Widget* root, ui::Widget* widget)
+void WidgetLoader::fillWidgetWithXmlElementAttributesWithChildren(const XMLElement* elem, ui::Widget* root, ui::Widget* widget)
 {
   fillWidgetWithXmlElementAttributes(elem, root, widget);
 
@@ -672,7 +697,7 @@ void WidgetLoader::fillWidgetWithXmlElementAttributesWithChildren(const TiXmlEle
     root = widget;
 
   // Children
-  const TiXmlElement* childElem = elem->FirstChildElement();
+  const XMLElement* childElem = elem->FirstChildElement();
   while (childElem) {
     Widget* child = convertXmlElementToWidget(childElem, root, widget, NULL);
     if (child) {
@@ -689,16 +714,16 @@ void WidgetLoader::fillWidgetWithXmlElementAttributesWithChildren(const TiXmlEle
         int hspan = cell_hspan ? strtol(cell_hspan, NULL, 10): 1;
         int vspan = cell_vspan ? strtol(cell_vspan, NULL, 10): 1;
         int align = cell_align ? convert_align_value_to_flags(cell_align): 0;
-        Grid* grid = dynamic_cast<Grid*>(widget);
-        ASSERT(grid != NULL);
+        auto grid = dynamic_cast<ui::Grid*>(widget);
+        ASSERT(grid != nullptr);
 
         grid->addChildInCell(child, hspan, vspan, align);
       }
       // Attach the child in the view
       else if (widget->type() == kComboBoxWidget &&
                child->type() == kListItemWidget) {
-        ComboBox* combo = dynamic_cast<ComboBox*>(widget);
-        ASSERT(combo != NULL);
+        auto combo = dynamic_cast<ComboBox*>(widget);
+        ASSERT(combo != nullptr);
 
         combo->addItem(dynamic_cast<ListItem*>(child));
       }
@@ -757,7 +782,7 @@ static int convert_align_value_to_flags(const char *value)
   return flags;
 }
 
-static int int_attr(const TiXmlElement* elem, const char* attribute_name, int default_value)
+static int int_attr(const XMLElement* elem, const char* attribute_name, int default_value)
 {
   const char* value = elem->Attribute(attribute_name);
 

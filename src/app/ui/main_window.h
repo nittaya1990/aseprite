@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2021  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -70,6 +70,7 @@ namespace app {
     void updateConsentCheckbox();
 #endif
 
+    void initialize();
     void start();
     void showNotification(INotificationDelegate* del);
     void showHomeOnOpen();
@@ -101,9 +102,14 @@ namespace app {
     void onTabsContainerDoubleClicked(Tabs* tabs) override;
     void onMouseOverTab(Tabs* tabs, TabView* tabView) override;
     void onMouseLeaveTab() override;
-    DropViewPreviewResult onFloatingTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos) override;
+    DropViewPreviewResult onFloatingTab(Tabs* tabs,
+                                        TabView* tabView,
+                                        const gfx::Point& screenPos) override;
     void onDockingTab(Tabs* tabs, TabView* tabView) override;
-    DropTabResult onDropTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos, bool clone) override;
+    DropTabResult onDropTab(Tabs* tabs,
+                            TabView* tabView,
+                            const gfx::Point& screenPos,
+                            const bool clone) override;
 
   protected:
     bool onProcessMessage(ui::Message* msg) override;
@@ -111,6 +117,7 @@ namespace app {
     void onSaveLayout(ui::SaveLayoutEvent& ev) override;
     void onResize(ui::ResizeEvent& ev) override;
     void onActiveViewChange();
+    void onLanguageChange();
 
   private:
     DocView* getDocView();

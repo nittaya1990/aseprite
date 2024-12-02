@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2022-2023  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -15,6 +16,7 @@
 #include "base/convert_to.h"
 #include "base/fs.h"
 #include "base/replace_string.h"
+#include "fmt/format.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -34,15 +36,34 @@ static bool replace_frame(const char* frameKey, // E.g. = "{frame"
     if (j != std::string::npos) {
       std::string from = str.substr(i, j - i + 1);
       if (frameBase >= 0) {
-        std::vector<char> to(32);
         int offset = std::strtol(from.c_str()+keyLen, NULL, 10);
 
-        std::sprintf(&to[0], "%0*d", (int(j)-int(i+keyLen)), frameBase + offset);
-        base::replace_string(str, from, &to[0]);
+        const std::string to =
+          fmt::format("{0:0{1}d}",
+                      frameBase + offset,
+                      (int(j)-int(i+keyLen)));
+
+        base::replace_string(str, from, to);
       }
       else
-        base::replace_string(str, from, "");
+        base::replace_string(str, from, std::string());
     }
+    return true;
+  }
+  else
+    return false;
+}
+
+static bool autodetect_frame_format(const std::string& filename,
+                                    std::string& left,
+                                    std::string& frameFormat,
+                                    std::string& right,
+                                    int& frameBase)
+{
+  int frameWidth = 0;
+  frameBase = split_filename(filename, left, right, frameWidth);
+  if (frameBase >= 0) {
+    frameFormat = fmt::format("{{frame{0:0{1}d}}}", frameBase, frameWidth);
     return true;
   }
   else
@@ -71,6 +92,30 @@ bool get_frame_info_from_filename_format(
   }
   else
     return false;
+}
+
+bool is_template_in_filename(const std::string& format)
+{
+  std::vector<std::string> formats{
+    "{fullname}",
+    "{path}",
+    "{name}",
+    "{title}",
+    "{extension}",
+    "{layer}",
+    "{slice}",
+    "{tag}",
+    "{innertag}",
+    "{outertag}",
+    "{frame}",
+    "{tagframe}"
+  };
+  for (int i = 0; i < formats.size(); i++) {
+    if (format.find(formats[i]) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool is_tag_in_filename_format(const std::string& format)
@@ -112,12 +157,12 @@ std::string filename_formatter(
   base::replace_string(output, "{layer}", info.layerName());
   base::replace_string(output, "{group}", info.groupName());
   base::replace_string(output, "{slice}", info.sliceName());
-  base::replace_string(output, "{duration}", std::to_string(info.duration()));
 
   if (replaceFrame) {
     base::replace_string(output, "{tag}", info.innerTagName());
     base::replace_string(output, "{innertag}", info.innerTagName());
     base::replace_string(output, "{outertag}", info.outerTagName());
+    base::replace_string(output, "{duration}", std::to_string(info.duration()));
     replace_frame("{frame", info.frame(), output);
     replace_frame("{tagframe", info.tagFrame(), output);
   }
@@ -155,16 +200,14 @@ std::string get_default_filename_format(
     // Check if we already have a frame number at the end of the
     // filename (e.g. output01.png)
     int frameBase = -1, frameWidth = 0;
-    std::string left, right;
-    if (autoFrameFromLastDigit)
-      frameBase = split_filename(filename, left, right, frameWidth);
-    if (frameBase >= 0) {
-      std::vector<char> buf(32);
-      std::sprintf(&buf[0], "{frame%0*d}", frameWidth, frameBase);
+    std::string left, frameFormat, right;
 
+    if (autoFrameFromLastDigit &&
+        autodetect_frame_format(
+          filename, left, frameFormat, right, frameBase)) {
       if (hasLayer || hasTag)
         format += " ";
-      format += &buf[0];
+      format += frameFormat;
 
       // Remove the frame number from the filename part.
       filename = left;
@@ -214,6 +257,33 @@ std::string get_default_filename_format_for_sheet(
 
   format += ".{extension}";
   return format;
+}
+
+std::string get_default_tagname_format_for_sheet()
+{
+  return "{tag}";
+}
+
+std::string replace_frame_number_with_frame_format(const std::string& filename)
+{
+  std::string result = filename;
+
+  if (is_static_image_format(filename) &&
+      filename.find("{frame") == std::string::npos &&
+      filename.find("{tagframe") == std::string::npos) {
+    std::string left, frameFormat, right;
+    int frameBase = -1;
+
+    if (!autodetect_frame_format(
+          filename, left, frameFormat, right, frameBase)) {
+      frameFormat = "{frame1}";
+    }
+    result = left;
+    result += frameFormat;
+    result += right;
+  }
+
+  return result;
 }
 
 } // namespace app

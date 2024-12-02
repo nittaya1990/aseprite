@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,6 +9,7 @@
 #include "config.h"
 #endif
 
+#include "app/cmd/replace_tileset.h"
 #include "app/cmd/set_cel_bounds.h"
 #include "app/cmd/set_slice_key.h"
 #include "app/commands/command.h"
@@ -16,21 +17,23 @@
 #include "app/commands/params.h"
 #include "app/doc_api.h"
 #include "app/ini_file.h"
+#include "app/i18n/strings.h"
 #include "app/modules/gui.h"
 #include "app/modules/palettes.h"
 #include "app/sprite_job.h"
 #include "app/util/resize_image.h"
-#include "base/clamp.h"
 #include "base/convert_to.h"
 #include "doc/algorithm/resize_image.h"
 #include "doc/cel.h"
 #include "doc/cels_range.h"
 #include "doc/image.h"
 #include "doc/layer.h"
+#include "doc/layer_tilemap.h"
 #include "doc/mask.h"
 #include "doc/primitives.h"
 #include "doc/slice.h"
 #include "doc/sprite.h"
+#include "doc/tilesets.h"
 #include "ui/ui.h"
 
 #include "sprite_size.xml.h"
@@ -77,8 +80,12 @@ class SpriteSizeJob : public SpriteJob {
 
 public:
 
-  SpriteSizeJob(const ContextReader& reader, int new_width, int new_height, ResizeMethod resize_method)
-    : SpriteJob(reader, "Sprite Size") {
+  SpriteSizeJob(Context* ctx, Doc* doc,
+                const int new_width,
+                const int new_height,
+                const ResizeMethod resize_method,
+                const bool showProgress)
+    : SpriteJob(ctx, doc, Strings::sprite_size_title(), showProgress) {
     m_new_width = new_width;
     m_new_height = new_height;
     m_resize_method = resize_method;
@@ -87,30 +94,98 @@ public:
 protected:
 
   // [working thread]
-  void onJob() override {
-    DocApi api = writer().document()->getApi(tx());
+  void onSpriteJob(Tx& tx) override {
+    DocApi api = document()->getApi(tx);
+    Tilesets* tilesets = sprite()->tilesets();
 
-    int cels_count = 0;
+    int img_count = 0;
+    if (tilesets) {
+      for (Tileset* tileset : *tilesets) {
+        if (tileset)
+          img_count += tileset->size();
+      }
+    }
     for (Cel* cel : sprite()->uniqueCels()) { // TODO add size() member function to CelsRange
       (void)cel;
-      ++cels_count;
+      ++img_count;
     }
 
+    int progress = 0;
     const gfx::SizeF scale(
       double(m_new_width) / double(sprite()->width()),
       double(m_new_height) / double(sprite()->height()));
 
+    // Resize tilesets
+    if (tilesets) {
+      for (tileset_index tsi=0; tsi<tilesets->size(); ++tsi) {
+        Tileset* tileset = tilesets->get(tsi);
+        if (!tileset)
+          continue;
+
+        gfx::Size newGridSize = tileset->grid().tileSize();
+        newGridSize.w *= scale.w;
+        newGridSize.h *= scale.h;
+        if (newGridSize.w < 1) newGridSize.w = 1;
+        if (newGridSize.h < 1) newGridSize.h = 1;
+        doc::Grid newGrid(newGridSize);
+
+        auto newTileset = new doc::Tileset(sprite(), newGrid, tileset->size());
+        doc::tile_index idx = 0;
+        newTileset->setName(tileset->name());
+        newTileset->setUserData(tileset->userData());
+        for (auto& tile : *tileset) {
+          if (idx != 0) {
+            doc::ImageRef newTileImg(
+              resize_image(
+                tile.image.get(),
+                scale,
+                m_resize_method,
+                sprite()->palette(0),
+                sprite()->rgbMap(0)));   // TODO first frame?
+
+            newTileset->set(idx, newTileImg);
+            newTileset->setTileData(idx, tileset->getTileData(idx));
+          }
+
+          jobProgress((float)progress / img_count);
+          ++progress;
+          ++idx;
+        }
+        tx(new cmd::ReplaceTileset(sprite(), tsi, newTileset));
+
+        // Cancel all the operation?
+        if (isCanceled())
+          return;        // Tx destructor will undo all operations
+      }
+    }
+
     // For each cel...
-    int progress = 0;
     for (Cel* cel : sprite()->uniqueCels()) {
-      resize_cel_image(
-        tx(), cel, scale,
-        m_resize_method,
-        cel->layer()->isReference() ?
+      // We need to adjust only the origin/position of tilemap cels
+      // (because tiles are resized automatically when we resize the
+      // tileset).
+      if (cel->layer()->isTilemap()) {
+        Tileset* tileset = static_cast<LayerTilemap*>(cel->layer())->tileset();
+        gfx::Size canvasSize =
+          tileset->grid().tilemapSizeToCanvas(
+            gfx::Size(cel->image()->width(),
+                      cel->image()->height()));
+        gfx::Rect newBounds(cel->x()*scale.w,
+                            cel->y()*scale.h,
+                            canvasSize.w,
+                            canvasSize.h);
+        tx(new cmd::SetCelBoundsF(cel, newBounds));
+      }
+      else {
+        resize_cel_image(
+          tx, cel, scale,
+          m_resize_method,
+          cel->layer()->isReference() ?
           -cel->boundsF().origin():
           gfx::PointF(-cel->bounds().origin()));
+      }
 
-      jobProgress((float)progress / cels_count);
+      jobProgress((float)progress / img_count);
       ++progress;
 
       // Cancel all the operation?
@@ -168,7 +243,7 @@ protected:
           newKey.setPivot(gfx::Point(scale_x(newKey.pivot().x),
                                      scale_y(newKey.pivot().y)));
 
-        tx()(new cmd::SetSliceKey(slice, k.frame(), newKey));
+        tx(new cmd::SetSliceKey(slice, k.frame(), newKey));
       }
     }
 
@@ -177,8 +252,6 @@ protected:
   }
 
 };
-
-#ifdef ENABLE_UI
 
 class SpriteSizeWindow : public app::gen::SpriteSize {
 public:
@@ -198,9 +271,9 @@ public:
                   doc::algorithm::RESIZE_METHOD_BILINEAR == 1 &&
                   doc::algorithm::RESIZE_METHOD_ROTSPRITE == 2,
                   "ResizeMethod enum has changed");
-    method()->addItem("Nearest-neighbor");
-    method()->addItem("Bilinear");
-    method()->addItem("RotSprite");
+    method()->addItem(Strings::sprite_size_method_nearest_neighbor());
+    method()->addItem(Strings::sprite_size_method_bilinear());
+    method()->addItem(Strings::sprite_size_method_rotsprite());
     int resize_method;
     if (params.method.isSet())
       resize_method = (int)params.method();
@@ -275,7 +348,6 @@ private:
 
   Context* m_ctx;
 };
-#endif // ENABLE_UI
 
 class SpriteSizeCommand : public CommandWithNewParams<SpriteSizeParams> {
 public:
@@ -299,11 +371,10 @@ bool SpriteSizeCommand::onEnabled(Context* context)
 
 void SpriteSizeCommand::onExecute(Context* context)
 {
-#ifdef ENABLE_UI
   const bool ui = (params().ui() && context->isUIAvailable());
-#endif
-  const ContextReader reader(context);
-  const Sprite* sprite(reader.sprite());
+  const Site site = context->activeSite();
+  Doc* doc = site.document();
+  Sprite* sprite = site.sprite();
   auto& params = this->params();
 
   double ratio = sprite->width() / double(sprite->height());
@@ -363,7 +434,6 @@ void SpriteSizeCommand::onExecute(Context* context)
   int new_height = params.height();
   ResizeMethod resize_method = params.method();
 
-#ifdef ENABLE_UI
   if (ui) {
     SpriteSizeWindow window(context, params);
     window.remapWindow();
@@ -384,20 +454,17 @@ void SpriteSizeCommand::onExecute(Context* context)
     set_config_int("SpriteSize", "Method", resize_method);
     set_config_bool("SpriteSize", "LockRatio", window.lockRatio()->isSelected());
   }
-#endif // ENABLE_UI
 
-  new_width = base::clamp(new_width, 1, DOC_SPRITE_MAX_WIDTH);
-  new_height = base::clamp(new_height, 1, DOC_SPRITE_MAX_HEIGHT);
+  new_width = std::clamp(new_width, 1, DOC_SPRITE_MAX_WIDTH);
+  new_height = std::clamp(new_height, 1, DOC_SPRITE_MAX_HEIGHT);
 
   {
-    SpriteSizeJob job(reader, new_width, new_height, resize_method);
+    SpriteSizeJob job(context, doc, new_width, new_height, resize_method, ui);
     job.startJob();
     job.waitJob();
   }
 
-#ifdef ENABLE_UI
-  update_screen_for_document(reader.document());
-#endif
+  update_screen_for_document(doc);
 }
 
 Command* CommandFactory::createSpriteSizeCommand()

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2015-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,13 +14,11 @@
 #include "app/context_access.h"
 #include "app/doc.h"
 #include "app/i18n/strings.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/snap_to_grid.h"
 #include "app/tx.h"
 #include "app/ui/editor/editor.h"
 #include "doc/mask.h"
-#include "fmt/format.h"
 #include "ui/system.h"
 
 namespace app {
@@ -67,8 +65,9 @@ bool SelectTileCommand::onEnabled(Context* ctx)
 
 void SelectTileCommand::onExecute(Context* ctx)
 {
-  if (!current_editor ||
-      !current_editor->hasMouse())
+  auto editor = Editor::activeEditor();
+  if (!editor ||
+      !editor->hasMouse())
     return;
 
   // Lock sprite
@@ -81,8 +80,8 @@ void SelectTileCommand::onExecute(Context* ctx)
     mask->copyFrom(doc->mask());
 
   {
-    gfx::Rect gridBounds = doc->sprite()->gridBounds();
-    gfx::Point pos = current_editor->screenToEditor(ui::get_mouse_position());
+    gfx::Rect gridBounds = writer.site()->gridBounds();
+    gfx::Point pos = editor->screenToEditor(editor->mousePosInDisplay());
     pos = snap_to_grid(gridBounds, pos, PreferSnapTo::BoxOrigin);
     gridBounds.setOrigin(pos);
 
@@ -101,7 +100,7 @@ void SelectTileCommand::onExecute(Context* ctx)
   }
 
   // Set the new mask
-  Tx tx(writer.context(),
+  Tx tx(writer,
         friendlyName(),
         DoesntModifyDocument);
   tx(new cmd::SetMask(doc, mask.get()));
@@ -124,7 +123,7 @@ std::string SelectTileCommand::onGetFriendlyName() const
       text = Strings::commands_SelectTile_Intersect();
       break;
     default:
-      text = getBaseFriendlyName();
+      text = Strings::commands_SelectTile();
       break;
   }
   return text;

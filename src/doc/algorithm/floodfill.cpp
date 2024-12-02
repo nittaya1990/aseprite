@@ -24,20 +24,18 @@
 
 #include <climits>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace doc {
 namespace algorithm {
 
 struct FLOODED_LINE {   // store segments which have been flooded
-  short flags;          // status of the segment
-  short lpos, rpos;     // left and right ends of segment
-  short y;              // y coordinate of the segment
+  char flags;           // status of the segment
+  int lpos, rpos;       // left and right ends of segment
+  int y;                // y coordinate of the segment
   int next;             // linked list if several per line
 };
-
-/* Note: a 'short' is not sufficient for 'next' above in some corner cases. */
-
 
 static std::vector<FLOODED_LINE> flood_buf;
 static int flood_count;          /* number of flooded segments */
@@ -47,6 +45,11 @@ static int flood_count;          /* number of flooded segments */
 #define FLOOD_TODO_BELOW         4
 
 #define FLOOD_LINE(c)            (&flood_buf[c])
+
+static inline bool color_equal_32_raw(color_t c1, color_t c2)
+{
+  return (c1 == c2);
+}
 
 static inline bool color_equal_32(color_t c1, color_t c2, int tolerance)
 {
@@ -121,6 +124,12 @@ template<>
 inline bool color_equal<IndexedTraits>(color_t c1, color_t c2, int tolerance)
 {
   return color_equal_8(c1, c2, tolerance);
+}
+
+template<>
+inline bool color_equal<TilemapTraits>(color_t c1, color_t c2, int tolerance)
+{
+  return color_equal_32_raw(c1, c2);
 }
 
 
@@ -211,6 +220,30 @@ static int flooder(const Image* image,
         // Work right from starting point
         for (right=x+1; right<bounds.x2(); right++) {
           if (!color_equal_8((int)*(address+right), src_color, tolerance) || MASKED(right, y))
+            break;
+        }
+      }
+      break;
+
+    case IMAGE_TILEMAP:
+      {
+        // TODO add support for mask
+
+        uint32_t* address = reinterpret_cast<uint32_t*>(image->getPixelAddress(0, y));
+
+        // Check start pixel
+        if (!color_equal_32_raw((int)*(address+x), src_color))
+          return x+1;
+
+        // Work left from starting point
+        for (left=x-1; left>=bounds.x; left--) {
+          if (!color_equal_32_raw((int)*(address+left), src_color))
+            break;
+        }
+
+        // Work right from starting point
+        for (right=x+1; right<bounds.x2(); right++) {
+          if (!color_equal_32_raw((int)*(address+right), src_color))
             break;
         }
       }
@@ -367,6 +400,9 @@ void floodfill(const Image* image,
       case IMAGE_INDEXED:
         replace_color<IndexedTraits>(image, bounds, src_color, tolerance, data, proc);
         break;
+      case IMAGE_TILEMAP:
+        replace_color<TilemapTraits>(image, bounds, src_color, tolerance, data, proc);
+        break;
     }
     return;
   }
@@ -377,8 +413,8 @@ void floodfill(const Image* image,
   FLOODED_LINE* p = (FLOODED_LINE*)&flood_buf[0];
   for (int c=0; c<flood_count; c++) {
     p[c].flags = 0;
-    p[c].lpos = SHRT_MAX;
-    p[c].rpos = SHRT_MIN;
+    p[c].lpos = std::numeric_limits<int>::max();
+    p[c].rpos = std::numeric_limits<int>::min();
     p[c].y = y;
     p[c].next = 0;
   }
@@ -407,7 +443,7 @@ void floodfill(const Image* image,
             p = FLOOD_LINE(c);
           }
 
-          if (p->lpos-1 >= 0 &&
+          if (p->lpos-1 >= bounds.x &&
               check_flood_line(image, mask, p->y+1, p->lpos-1, p->rpos, bounds,
                                src_color, tolerance, data, proc)) {
             done = false;
@@ -421,7 +457,7 @@ void floodfill(const Image* image,
             p = FLOOD_LINE(c);
           }
 
-          if (p->rpos-1 >= 0 &&
+          if (p->rpos-1 >= bounds.x &&
               check_flood_line(image, mask, p->y+1, p->lpos, p->rpos-1, bounds,
                                src_color, tolerance, data, proc)) {
             done = false;
@@ -448,7 +484,7 @@ void floodfill(const Image* image,
             p = FLOOD_LINE(c);
           }
 
-          if (p->lpos-1 >= 0 &&
+          if (p->lpos-1 >= bounds.x &&
               check_flood_line(image, mask, p->y-1, p->lpos-1, p->rpos, bounds,
                                src_color, tolerance, data, proc)) {
             done = false;
@@ -462,7 +498,7 @@ void floodfill(const Image* image,
             p = FLOOD_LINE(c);
           }
 
-          if (p->rpos-1 >= 0 &&
+          if (p->rpos-1 >= bounds.x &&
               check_flood_line(image, mask, p->y-1, p->lpos, p->rpos-1, bounds,
                                src_color, tolerance, data, proc)) {
             done = false;

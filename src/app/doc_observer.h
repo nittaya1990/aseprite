@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,6 +9,10 @@
 #define APP_DOC_OBSERVER_H_INCLUDED
 #pragma once
 
+namespace doc {
+  class Remap;
+}
+
 namespace app {
   class Doc;
   class DocEvent;
@@ -17,6 +21,7 @@ namespace app {
   public:
     virtual ~DocObserver() { }
 
+    virtual void onCloseDocument(Doc* doc) { }
     virtual void onFileNameChanged(Doc* doc) { }
 
     // General update. If an observer receives this event, it's because
@@ -60,6 +65,9 @@ namespace app {
     virtual void onCelFrameChanged(DocEvent& ev) { }
     virtual void onCelPositionChanged(DocEvent& ev) { }
     virtual void onCelOpacityChange(DocEvent& ev) { }
+    virtual void onCelZIndexChange(DocEvent& ev) { }
+
+    virtual void onUserDataChange(DocEvent& ev) { }
 
     virtual void onFrameDurationChanged(DocEvent& ev) { }
 
@@ -74,14 +82,44 @@ namespace app {
     virtual void onSelectionChanged(DocEvent& ev) { }
     virtual void onSelectionBoundariesChanged(DocEvent& ev) { }
 
-    // Tags
+    // When the tag range changes
     virtual void onTagChange(DocEvent& ev) { }
+
+    // When the tag is renamed
+    virtual void onTagRename(DocEvent& ev) { }
 
     // Slices
     virtual void onSliceNameChange(DocEvent& ev) { }
 
-    // Called to destroy the observable. (Here you could call "delete this".)
-    virtual void dispose() { }
+    // The tileset has changed.
+    virtual void onTilesetChanged(DocEvent& ev) { }
+
+    // The collapsed/expanded flag of a specific layer changed.
+    virtual void onLayerCollapsedChanged(DocEvent& ev) { }
+
+    // The visibility flag of a specific layer is going to change/changed.
+    virtual void onBeforeLayerVisibilityChange(DocEvent& ev, bool newState) { }
+    virtual void onAfterLayerVisibilityChange(DocEvent& ev) { }
+
+    // The tileset was remapped (e.g. when tiles are re-ordered).
+    virtual void onRemapTileset(DocEvent& ev, const doc::Remap& remap) { }
+
+    // When the tile management plugin property is changed.
+    virtual void onTileManagementPluginChange(DocEvent& ev) { }
+
+    // When a new tilemap cel/tile is created in certain situations,
+    // like after drawing in an empty tilemap cel, or when we paste a
+    // cel into an empty tilemap cel, so a new tile is created.
+    //
+    // This is useful for a tile management plugin to know when a new
+    // tile is added automatically by the editor or the timeline
+    // through draw_image_into_new_tilemap_cel(), and the plugin can
+    // do some extra work with it.
+    //
+    // Warning: This must be triggered from the UI thread (because
+    // scripts will listen this event).
+    virtual void onAfterAddTile(DocEvent& ev) { }
+
   };
 
 } // namespace app

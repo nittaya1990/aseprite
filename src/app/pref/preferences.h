@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -15,6 +15,7 @@
 #include "app/pref/option.h"
 #include "app/sprite_sheet_data_format.h"
 #include "app/sprite_sheet_type.h"
+#include "app/tools/dynamics.h"
 #include "app/tools/freehand_algorithm.h"
 #include "app/tools/ink_type.h"
 #include "app/tools/rotation_algorithm.h"
@@ -25,6 +26,7 @@
 #include "doc/color_mode.h"
 #include "doc/frame.h"
 #include "doc/layer_list.h"
+#include "doc/rgbmap_algorithm.h"
 #include "doc/sprite.h"
 #include "filters/hue_saturation_filter.h"
 #include "filters/tiled_mode.h"
@@ -56,7 +58,7 @@ namespace app {
     Preferences();
     ~Preferences();
 
-    void save();
+    void save() override;
 
     // Returns true if the given option was set by the user or false
     // if it contains the default value.

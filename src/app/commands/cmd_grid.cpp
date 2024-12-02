@@ -17,7 +17,6 @@
 #include "app/doc.h"
 #include "app/find_widget.h"
 #include "app/load_widget.h"
-#include "app/modules/editors.h"
 #include "app/pref/preferences.h"
 #include "app/tx.h"
 #include "app/ui/status_bar.h"
@@ -74,7 +73,7 @@ protected:
     const Mask* mask = doc->mask();
     gfx::Rect newGrid = mask->bounds();
 
-    Tx tx(writer.context(), friendlyName(), ModifyDocument);
+    Tx tx(writer, friendlyName(), ModifyDocument);
     tx(new cmd::SetGridBounds(writer.sprite(), newGrid));
     tx.commit();
 
@@ -115,6 +114,16 @@ void GridSettingsCommand::onExecute(Context* context)
   window.gridY()->setTextf("%d", bounds.y);
   window.gridW()->setTextf("%d", bounds.w);
   window.gridH()->setTextf("%d", bounds.h);
+  window.gridW()->Leave.connect([&window]{
+    // Prevent entering a width lesser than 1
+    if (window.gridW()->textInt() <= 0)
+      window.gridW()->setText("1");
+  });
+  window.gridH()->Leave.connect([&window]{
+    // Prevent entering a height lesser than 1
+    if (window.gridH()->textInt() <= 0)
+      window.gridH()->setText("1");
+  });
   window.openWindowInForeground();
 
   if (window.closer() == window.ok()) {
@@ -126,7 +135,7 @@ void GridSettingsCommand::onExecute(Context* context)
     bounds.h = std::max(bounds.h, 1);
 
     ContextWriter writer(context);
-    Tx tx(context, friendlyName(), ModifyDocument);
+    Tx tx(writer, friendlyName(), ModifyDocument);
     tx(new cmd::SetGridBounds(site.sprite(), bounds));
     tx.commit();
 

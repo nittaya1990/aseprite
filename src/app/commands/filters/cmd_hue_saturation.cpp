@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 // Copyright (C) 2017-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -46,8 +46,6 @@ struct HueSaturationParams : public NewParams {
   Param<double> alpha { this, 0.0, "alpha" };
 };
 
-#ifdef ENABLE_UI
-
 static const char* ConfigSection = "HueSaturation";
 
 class HueSaturationWindow : public FilterWindow {
@@ -80,6 +78,7 @@ public:
     m_sliders.setMode(ColorSliders::Mode::Relative);
     m_sliders.ColorChange.connect([this]{ onChangeControls(); });
 
+    initTheme();
     onChangeMode();
   }
 
@@ -95,6 +94,8 @@ private:
   }
 
   void onChangeMode() {
+    stopPreview();
+
     Preferences::instance().hueSaturation.mode(mode());
     m_filter.setMode(mode());
     m_sliders.setColorType(isHsl() ?
@@ -105,6 +106,8 @@ private:
   }
 
   void onChangeControls() {
+    stopPreview();
+
     m_sliders.syncRelHsvHslSliders();
 
     if (isHsl()) {
@@ -134,8 +137,6 @@ private:
   ColorSliders m_sliders;
 };
 
-#endif  // ENABLE_UI
-
 class HueSaturationCommand : public CommandWithNewParams<HueSaturationParams> {
 public:
   HueSaturationCommand();
@@ -158,9 +159,7 @@ bool HueSaturationCommand::onEnabled(Context* ctx)
 
 void HueSaturationCommand::onExecute(Context* ctx)
 {
-#ifdef ENABLE_UI
   const bool ui = (params().ui() && ctx->isUIAvailable());
-#endif
 
   HueSaturationFilter filter;
   FilterManagerImpl filterMgr(ctx, &filter);
@@ -179,14 +178,11 @@ void HueSaturationCommand::onExecute(Context* ctx)
   if (params().channels.isSet()) channels = params().channels();
   filterMgr.setTarget(channels);
 
-#ifdef ENABLE_UI
   if (ui) {
     HueSaturationWindow window(filter, filterMgr);
     window.doModal();
   }
-  else
-#endif // ENABLE_UI
-  {
+  else {
     start_filter_worker(&filterMgr);
   }
 }

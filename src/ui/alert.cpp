@@ -1,5 +1,5 @@
 // Aseprite UI Library
-// Copyright (C) 2019-2020  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -35,8 +35,8 @@
 
 #include "ui/alert.h"
 
-#include "base/clamp.h"
 #include "base/string.h"
+#include "fmt/format.h"
 #include "ui/box.h"
 #include "ui/button.h"
 #include "ui/grid.h"
@@ -46,7 +46,8 @@
 #include "ui/slider.h"
 #include "ui/theme.h"
 
-#include <cstdio>
+#include <algorithm>
+#include <string>
 
 namespace ui {
 
@@ -111,13 +112,16 @@ void Alert::addSeparator()
 void Alert::addButton(const std::string& text)
 {
   auto button = new Button(text);
-  button->processMnemonicFromText();
+
+  // Process the mnemonic next to & character and "false" means that
+  // the mnemonic letter can be used without Alt or Command key
+  // modifiers.
+  button->processMnemonicFromText('&', false);
+
   button->setMinSize(gfx::Size(60*guiscale(), 0));
   m_buttons.push_back(button);
 
-  char id[256];
-  sprintf(id, "button-%lu", m_buttons.size());
-  button->setId(id);
+  button->setId(fmt::format("button-{}", m_buttons.size()).c_str());
   button->Click.connect([this, button]{ closeWindow(button); });
 
   m_buttonsPlaceholder->addChild(button);
@@ -143,7 +147,7 @@ CheckBox* Alert::addCheckBox(const std::string& text)
 void Alert::setProgress(double progress)
 {
   ASSERT(m_progress);
-  m_progress->setValue(int(base::clamp(progress * 100.0, 0.0, 100.0)));
+  m_progress->setValue(int(std::clamp(progress * 100.0, 0.0, 100.0)));
 }
 
 // static

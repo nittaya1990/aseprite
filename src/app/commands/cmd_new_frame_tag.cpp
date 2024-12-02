@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2019-2022  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -68,12 +68,13 @@ void NewFrameTagCommand::onExecute(Context* context)
   window.rangeValue(from, to);
   tag->setFrameRange(from, to);
   tag->setName(window.nameValue());
-  tag->setColor(window.colorValue());
   tag->setAniDir(window.aniDirValue());
+  tag->setRepeat(window.repeatValue());
+  tag->setUserData(window.userDataValue());
 
   {
     ContextWriter writer(reader);
-    Tx tx(writer.context(), friendlyName());
+    Tx tx(writer, friendlyName());
     tx(new cmd::AddTag(writer.sprite(), tag.get()));
     tag.release();
     tx.commit();

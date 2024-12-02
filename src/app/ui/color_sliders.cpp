@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2020  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,7 +13,10 @@
 #include "app/color_spaces.h"
 #include "app/color_utils.h"
 #include "app/modules/gfx.h"
+#include "app/ui/alpha_entry.h"
+#include "app/ui/alpha_slider.h"
 #include "app/ui/color_sliders.h"
+#include "app/ui/expr_entry.h"
 #include "app/ui/skin/skin_slider_property.h"
 #include "app/ui/skin/skin_theme.h"
 #include "base/scoped_value.h"
@@ -128,30 +131,37 @@ namespace {
     app::Color m_color;
   };
 
-  class ColorEntry : public Entry {
+  class ColorEntry : public ExprEntry {
   public:
     ColorEntry(Slider* absSlider, Slider* relSlider)
-      : Entry(4, "0")
+      : ExprEntry()
       , m_absSlider(absSlider)
       , m_relSlider(relSlider)
       , m_recent_focus(false) {
+      setText("0");
     }
 
   private:
     int minValue() const {
-      if (m_absSlider->isVisible())
-        return m_absSlider->getMinValue();
-      else if (m_relSlider->isVisible())
-        return m_relSlider->getMinValue();
+      auto slider = (m_absSlider->isVisible() ? m_absSlider : m_relSlider);
+
+      if (slider->isVisible()) {
+        int min;
+        slider->getSliderThemeInfo(&min, nullptr, nullptr);
+        return min;
+      }
       else
         return 0;
     }
 
     int maxValue() const {
-      if (m_absSlider->isVisible())
-        return m_absSlider->getMaxValue();
-      else if (m_relSlider->isVisible())
-        return m_relSlider->getMaxValue();
+      auto slider = (m_absSlider->isVisible() ? m_absSlider : m_relSlider);
+
+      if (slider->isVisible()) {
+        int max;
+        slider->getSliderThemeInfo(nullptr, &max, nullptr);
+        return max;
+      }
       else
         return 0;
     }
@@ -185,7 +195,7 @@ namespace {
                 else
                   ++value;
 
-                setTextf("%d", base::clamp(value, minValue(), maxValue()));
+                setTextf("%d", std::clamp(value, minValue(), maxValue()));
                 selectAllText();
 
                 onChange();
@@ -241,7 +251,6 @@ ColorSliders::ColorSliders()
   , m_color(app::Color::fromMask())
 {
   addChild(&m_grid);
-  m_grid.setChildSpacing(0);
 
   // Same order as in Channel enum
   static_assert(Channel::Red == (Channel)0, "");
@@ -257,6 +266,12 @@ ColorSliders::ColorSliders()
   addSlider(Channel::HslLightness,  "L", 0, 100, -100, 100);
   addSlider(Channel::Gray,          "V", 0, 255, -100, 100);
   addSlider(Channel::Alpha,         "A", 0, 255, -100, 100);
+
+  InitTheme.connect(
+    [this] {
+      m_grid.setChildSpacing(0);
+    }
+  );
 
   m_appConn = App::instance()
     ->ColorSpaceChange.connect([this]{ invalidate(); });
@@ -360,11 +375,15 @@ void ColorSliders::addSlider(const Channel channel,
                              const int absMin, const int absMax,
                              const int relMin, const int relMax)
 {
+  auto theme = skin::SkinTheme::get(this);
+
   Item& item = m_items[channel];
   ASSERT(!item.label);
   item.label     = new Label(labelText);
   item.box       = new HBox();
-  item.absSlider = new Slider(absMin, absMax, 0);
+  item.absSlider = (channel != Channel::Alpha
+                   ? new Slider(absMin, absMax, 0)
+                   : new AlphaSlider(0, AlphaSlider::Type::ALPHA));
   item.relSlider = new Slider(relMin, relMax, 0);
   item.entry     = new ColorEntry(item.absSlider, item.relSlider);
 
@@ -387,7 +406,7 @@ void ColorSliders::addSlider(const Channel channel,
   item.relSlider->setVisible(false);
 
   gfx::Size sz(std::numeric_limits<int>::max(),
-               SkinTheme::instance()->dimensions.colorSliderHeight());
+               theme->dimensions.colorSliderHeight());
   item.label->setMaxSize(sz);
   item.box->setMaxSize(sz);
   item.entry->setMaxSize(sz);
@@ -443,7 +462,7 @@ void ColorSliders::syncRelHsvHslSliders()
 
 void ColorSliders::onSliderChange(const Channel i)
 {
-  base::ScopedValue<int> lock(m_lockSlider, i, m_lockSlider);
+  base::ScopedValue<int> lock(m_lockSlider, i);
 
   updateEntryText(i);
   onControlChange(i);
@@ -451,7 +470,7 @@ void ColorSliders::onSliderChange(const Channel i)
 
 void ColorSliders::onEntryChange(const Channel i)
 {
-  base::ScopedValue<int> lock(m_lockEntry, i, m_lockEntry);
+  base::ScopedValue<int> lock(m_lockEntry, i);
 
   // Update the slider related to the changed entry widget.
   int value = m_items[i].entry->textInt();
@@ -459,8 +478,7 @@ void ColorSliders::onEntryChange(const Channel i)
   Slider* slider = (m_mode == Mode::Absolute ?
                     m_items[i].absSlider:
                     m_items[i].relSlider);
-  value = base::clamp(value, slider->getMinValue(), slider->getMaxValue());
-  slider->setValue(value);
+  slider->updateValue(value);
 
   onControlChange(i);
 }
@@ -485,7 +503,10 @@ void ColorSliders::updateEntryText(const Channel i)
   Slider* slider = (m_mode == Mode::Absolute ? m_items[i].absSlider:
                                                m_items[i].relSlider);
 
-  m_items[i].entry->setTextf("%d", slider->getValue());
+  int value;
+  slider->getSliderThemeInfo(nullptr, nullptr, &value);
+
+  m_items[i].entry->setTextf("%d", value);
   if (m_items[i].entry->hasFocus())
     m_items[i].entry->selectAllText();
 }
@@ -511,12 +532,12 @@ void ColorSliders::onSetColor(const app::Color& color)
   setAbsSliderValue(Channel::Red,           color.getRed());
   setAbsSliderValue(Channel::Green,         color.getGreen());
   setAbsSliderValue(Channel::Blue,          color.getBlue());
-  setAbsSliderValue(Channel::HsvHue,        int(color.getHsvHue()));
-  setAbsSliderValue(Channel::HsvSaturation, int(color.getHsvSaturation() * 100.0));
-  setAbsSliderValue(Channel::HsvValue,      int(color.getHsvValue() * 100.0));
-  setAbsSliderValue(Channel::HslHue,        int(color.getHslHue()));
-  setAbsSliderValue(Channel::HslSaturation, int(color.getHslSaturation() * 100.0));
-  setAbsSliderValue(Channel::HslLightness,  int(color.getHslLightness() * 100.0));
+  setAbsSliderValue(Channel::HsvHue,        int(color.getHsvHue() + 0.5));
+  setAbsSliderValue(Channel::HsvSaturation, int(color.getHsvSaturation() * 100.0 + 0.5));
+  setAbsSliderValue(Channel::HsvValue,      int(color.getHsvValue() * 100.0 + 0.5));
+  setAbsSliderValue(Channel::HslHue,        int(color.getHslHue() + 0.5));
+  setAbsSliderValue(Channel::HslSaturation, int(color.getHslSaturation() * 100.0 + 0.5));
+  setAbsSliderValue(Channel::HslLightness,  int(color.getHslLightness() * 100.0 + 0.5));
   setAbsSliderValue(Channel::Gray,          color.getGray());
   setAbsSliderValue(Channel::Alpha,         color.getAlpha());
 }

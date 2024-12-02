@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,11 +13,9 @@
 #include "app/cmd/set_cel_bounds.h"
 #include "app/commands/cmd_rotate.h"
 #include "app/commands/params.h"
-#include "app/context_access.h"
 #include "app/doc_api.h"
 #include "app/doc_range.h"
 #include "app/i18n/strings.h"
-#include "app/modules/editors.h"
 #include "app/modules/gui.h"
 #include "app/sprite_job.h"
 #include "app/tools/tool_box.h"
@@ -34,7 +32,6 @@
 #include "doc/image.h"
 #include "doc/mask.h"
 #include "doc/sprite.h"
-#include "fmt/format.h"
 #include "ui/ui.h"
 
 namespace app {
@@ -46,8 +43,12 @@ class RotateJob : public SpriteJob {
 
 public:
 
-  RotateJob(const ContextReader& reader, int angle, const CelList& cels, bool rotateSprite)
-    : SpriteJob(reader, "Rotate Canvas")
+  RotateJob(Context* ctx, Doc* doc,
+            const std::string& jobName,
+            int angle, const CelList& cels,
+            const bool rotateSprite,
+            const bool showProgress)
+    : SpriteJob(ctx, doc, jobName, showProgress)
     , m_cels(cels)
     , m_rotateSprite(rotateSprite) {
     m_angle = angle;
@@ -79,8 +80,8 @@ protected:
   }
 
   // [working thread]
-  void onJob() override {
-    DocApi api = document()->getApi(tx());
+  void onSpriteJob(Tx& tx) override {
+    DocApi api = document()->getApi(tx);
 
     // 1) Rotate cel positions
     for (Cel* cel : m_cels) {
@@ -92,7 +93,7 @@ protected:
         gfx::RectF bounds = cel->boundsF();
         rotate_rect(bounds);
         if (cel->boundsF() != bounds)
-          tx()(new cmd::SetCelBoundsF(cel, bounds));
+          tx(new cmd::SetCelBoundsF(cel, bounds));
       }
       else {
         gfx::Rect bounds = cel->bounds();
@@ -167,12 +168,18 @@ protected:
 RotateCommand::RotateCommand()
   : Command(CommandId::Rotate(), CmdRecordableFlag)
 {
+  m_ui = true;
   m_flipMask = false;
   m_angle = 0;
 }
 
 void RotateCommand::onLoadParams(const Params& params)
 {
+  if (params.has_param("ui"))
+    m_ui = params.get_as<bool>("ui");
+  else
+    m_ui = true;
+
   std::string target = params.get("target");
   m_flipMask = (target == "mask");
 
@@ -191,6 +198,7 @@ void RotateCommand::onExecute(Context* context)
 {
   {
     Site site = context->activeSite();
+    Doc* doc = site.document();
     CelList cels;
     bool rotateSprite = false;
 
@@ -202,12 +210,13 @@ void RotateCommand::onExecute(Context* context)
       // If we want to rotate the visible mask, we can go to
       // MovingPixelsState (even when the range is enabled, because
       // now PixelsMovement support ranges).
-      if (site.document()->isMaskVisible()) {
+      if (doc->isMaskVisible()) {
         // Select marquee tool
         if (tools::Tool* tool = App::instance()->toolBox()
             ->getToolById(tools::WellKnownTools::RectangularMarquee)) {
           ToolBar::instance()->selectTool(tool);
-          current_editor->startSelectionTransformation(gfx::Point(0, 0), m_angle);
+          if (auto editor = Editor::activeEditor())
+            editor->startSelectionTransformation(gfx::Point(0, 0), m_angle);
           return;
         }
       }
@@ -235,13 +244,12 @@ void RotateCommand::onExecute(Context* context)
       rotateSprite = true;
     }
 
-    ContextReader reader(context);
     {
-      RotateJob job(reader, m_angle, cels, rotateSprite);
+      RotateJob job(context, doc, friendlyName(), m_angle, cels, rotateSprite, m_ui);
       job.startJob();
       job.waitJob();
     }
-    update_screen_for_document(reader.document());
+    update_screen_for_document(doc);
   }
 }
 
@@ -252,8 +260,8 @@ std::string RotateCommand::onGetFriendlyName() const
     content = Strings::commands_Rotate_Selection();
   else
     content = Strings::commands_Rotate_Sprite();
-  return fmt::format(getBaseFriendlyName(),
-                     content, base::convert_to<std::string>(m_angle));
+  return Strings::commands_Rotate(content,
+                                  base::convert_to<std::string>(m_angle));
 }
 
 Command* CommandFactory::createRotateCommand()

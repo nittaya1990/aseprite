@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2021  Igara Studio S.A.
+// Copyright (C) 2020-2024  Igara Studio S.A.
 // Copyright (C) 2016-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,39 +9,59 @@
 #include "config.h"
 #endif
 
-#include "app/util/clipboard_native.h"
+#include "app/util/clipboard.h"
 
 #include "app/i18n/strings.h"
 #include "base/serialization.h"
 #include "clip/clip.h"
 #include "doc/color_scales.h"
+#include "doc/file/hex_file.h"
 #include "doc/image.h"
 #include "doc/image_impl.h"
 #include "doc/image_io.h"
 #include "doc/mask_io.h"
 #include "doc/palette_io.h"
+#include "doc/tileset_io.h"
 #include "gfx/size.h"
-#include "os/window.h"
 #include "os/system.h"
+#include "os/window.h"
 #include "ui/alert.h"
 
 #include <sstream>
+#include <string>
 #include <vector>
 
 namespace app {
-namespace clipboard {
 
 using namespace base::serialization;
 using namespace base::serialization::little_endian;
 
 namespace {
   clip::format custom_image_format = 0;
+  bool show_clip_errors = true;
 
-  void* native_display_handle() {
-    return os::instance()->defaultWindow()->nativeHandle();
+  class InhibitClipErrors {
+    bool m_saved;
+  public:
+    InhibitClipErrors() {
+      m_saved = show_clip_errors;
+      show_clip_errors = false;
+    }
+    ~InhibitClipErrors() {
+      show_clip_errors = m_saved;
+    }
+  };
+
+  void* native_window_handle() {
+    if (os::instance()->defaultWindow())
+      return os::instance()->defaultWindow()->nativeHandle();
+    return nullptr;
   }
 
   void custom_error_handler(clip::ErrorCode code) {
+    if (!show_clip_errors)
+      return;
+
     switch (code) {
       case clip::ErrorCode::CannotLock:
         ui::Alert::show(Strings::alerts_clipboard_access_locked());
@@ -54,22 +74,31 @@ namespace {
 
 }
 
-void register_native_clipboard_formats()
+void Clipboard::clearNativeContent()
+{
+  clip::lock l(native_window_handle());
+  l.clear();
+}
+
+void Clipboard::registerNativeFormats()
 {
   clip::set_error_handler(custom_error_handler);
   custom_image_format = clip::register_format("org.aseprite.Image");
 }
 
-bool has_native_clipboard_bitmap()
+bool Clipboard::hasNativeBitmap() const
 {
+  InhibitClipErrors ice;
   return clip::has(clip::image_format());
 }
 
-bool set_native_clipboard_bitmap(const doc::Image* image,
-                                 const doc::Mask* mask,
-                                 const doc::Palette* palette)
+bool Clipboard::setNativeBitmap(const doc::Image* image,
+                                const doc::Mask* mask,
+                                const doc::Palette* palette,
+                                const doc::Tileset* tileset,
+                                const doc::color_t indexMaskColor)
 {
-  clip::lock l(native_display_handle());
+  clip::lock l(native_window_handle());
   if (!l.locked())
     return false;
 
@@ -84,10 +113,12 @@ bool set_native_clipboard_bitmap(const doc::Image* image,
     write32(os,
             (image   ? 1: 0) |
             (mask    ? 2: 0) |
-            (palette ? 4: 0));
+            (palette ? 4: 0) |
+            (tileset ? 8: 0));
     if (image) doc::write_image(os, image);
     if (mask) doc::write_mask(os, mask);
     if (palette) doc::write_palette(os, palette);
+    if (tileset) doc::write_tileset(os, tileset);
 
     if (os.good()) {
       size_t size = (size_t)os.tellp();
@@ -106,7 +137,7 @@ bool set_native_clipboard_bitmap(const doc::Image* image,
   spec.height = image->height();
   spec.bits_per_pixel = 32;
   spec.bytes_per_row = (image->pixelFormat() == doc::IMAGE_RGB ?
-                        image->getRowStrideSize(): 4*spec.width);
+                        image->rowBytes(): 4*spec.width);
   spec.red_mask    = doc::rgba_r_mask;
   spec.green_mask  = doc::rgba_g_mask;
   spec.blue_mask   = doc::rgba_b_mask;
@@ -150,7 +181,7 @@ bool set_native_clipboard_bitmap(const doc::Image* image,
           doc::color_t c = palette->getEntry(*it);
 
           // Use alpha=0 for mask color
-          if (*it == image->maskColor())
+          if (*it == indexMaskColor)
             c &= doc::rgba_rgb_mask;
 
           *(dst++) = c;
@@ -164,15 +195,17 @@ bool set_native_clipboard_bitmap(const doc::Image* image,
   return true;
 }
 
-bool get_native_clipboard_bitmap(doc::Image** image,
-                                 doc::Mask** mask,
-                                 doc::Palette** palette)
+bool Clipboard::getNativeBitmap(doc::Image** image,
+                                doc::Mask** mask,
+                                doc::Palette** palette,
+                                doc::Tileset** tileset)
 {
   *image = nullptr;
   *mask = nullptr;
   *palette = nullptr;
+  *tileset = nullptr;
 
-  clip::lock l(native_display_handle());
+  clip::lock l(native_window_handle());
   if (!l.locked())
     return false;
 
@@ -190,6 +223,7 @@ bool get_native_clipboard_bitmap(doc::Image** image,
         if (bits & 1) *image   = doc::read_image(is, false);
         if (bits & 2) *mask    = doc::read_mask(is);
         if (bits & 4) *palette = doc::read_palette(is);
+        if (bits & 8) *tileset = doc::read_tileset(is, nullptr);
         if (image)
           return true;
       }
@@ -287,8 +321,12 @@ bool get_native_clipboard_bitmap(doc::Image** image,
   return true;
 }
 
-bool get_native_clipboard_bitmap_size(gfx::Size* size)
+bool Clipboard::getNativeBitmapSize(gfx::Size* size)
 {
+  // Don't show errors when we are trying to get the size of the image
+  // only. (E.g. don't show "invalid image format error")
+  InhibitClipErrors inhibitErrors;
+
   clip::image_spec spec;
   if (clip::get_image_spec(spec)) {
     size->w = spec.width;
@@ -299,5 +337,26 @@ bool get_native_clipboard_bitmap_size(gfx::Size* size)
     return false;
 }
 
-} // namespace clipboard
+bool Clipboard::setNativePalette(const doc::Palette* palette,
+                                 const doc::PalettePicks& picks)
+{
+  clip::lock l(native_window_handle());
+  if (!l.locked())
+    return false;
+
+  l.clear();
+
+  // Save the palette in hex format as text
+  std::stringstream os;
+  doc::file::save_hex_file(
+    palette, &picks,
+    true, // include '#' on each line
+    false, // don't include a EOL char at the end (so we can copy one color without \n chars)
+    os);
+
+  std::string value = os.str();
+  l.set_data(clip::text_format(), value.c_str(), value.size());
+  return true;
+}
+
 } // namespace app

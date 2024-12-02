@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020-2021  Igara Studio S.A.
+// Copyright (C) 2020-2023  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -18,6 +18,7 @@
 #include "base/convert_to.h"
 #include "base/launcher.h"
 #include "base/replace_string.h"
+#include "base/thread.h"
 #include "base/version.h"
 #include "ver/info.h"
 
@@ -120,10 +121,12 @@ void CheckUpdateThreadLauncher::launch()
   if (m_uuid.empty())
     m_uuid = m_preferences.updater.uuid();
 
+  if (!m_uuid.empty()) {
 #if ENABLE_SENTRY
-  if (!m_uuid.empty())
     Sentry::setUserID(m_uuid);
 #endif
+    LOG(VERBOSE, "APP: Saved UUID %s\n", m_uuid.c_str());
+  }
 
   // In this case we are in the "wait days" period, so we don't check
   // for updates.
@@ -135,7 +138,7 @@ void CheckUpdateThreadLauncher::launch()
   m_delegate->onCheckingUpdates();
 
   m_bgJob.reset(new CheckUpdateBackgroundJob);
-  m_thread.reset(new base::thread([this]{ checkForUpdates(); }));
+  m_thread.reset(new std::thread([this]{ checkForUpdates(); }));
 
   // Start a timer to monitoring the progress of the background job
   // executed in "m_thread". The "onMonitoringTick" method will be
@@ -178,10 +181,12 @@ void CheckUpdateThreadLauncher::onMonitoringTick()
     m_uuid = m_response.getUuid();
     m_preferences.updater.uuid(m_uuid);
 
+    if (!m_uuid.empty()) {
 #if ENABLE_SENTRY
-    if (!m_uuid.empty())
       Sentry::setUserID(m_uuid);
 #endif
+      LOG(VERBOSE, "APP: New UUID %s\n", m_uuid.c_str());
+    }
   }
 
   // Set the date of the last "check for updates" and the "WaitDays" parameter.
@@ -198,6 +203,8 @@ void CheckUpdateThreadLauncher::onMonitoringTick()
 // This method is executed in a special thread to send the HTTP request.
 void CheckUpdateThreadLauncher::checkForUpdates()
 {
+  base::this_thread::set_name("check-update");
+
   // Add mini-stats in the request
   std::stringstream extraParams;
   extraParams << "inits=" << m_inits

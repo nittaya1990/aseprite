@@ -1,5 +1,5 @@
 // Aseprite Document Library
-// Copyright (c) 2020  Igara Studio S.A.
+// Copyright (c) 2020-2024 Igara Studio S.A.
 // Copyright (c) 2001-2017 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -13,14 +13,23 @@
 
 #include "base/base.h"
 #include "doc/image.h"
+#include "doc/palette_gradient_type.h"
 #include "doc/remap.h"
+#include "gfx/hsv.h"
+#include "gfx/rgb.h"
 
 #include <algorithm>
 #include <limits>
+#include <cmath>
 
 namespace doc {
 
 using namespace gfx;
+
+Palette::Palette()
+  : Palette(0, 256)
+{
+}
 
 Palette::Palette(frame_t frame, int ncolors)
   : Object(ObjectType::Palette)
@@ -58,6 +67,18 @@ Palette::~Palette()
 {
 }
 
+Palette& Palette::operator=(const Palette& that)
+{
+  m_frame = that.m_frame;
+  m_colors = that.m_colors;
+  m_names = that.m_names;
+  m_filename = that.m_filename;
+  m_comment = that.m_comment;
+
+  ++m_modifications;
+  return *this;
+}
+
 Palette* Palette::createGrayscale()
 {
   Palette* graypal = new Palette(frame_t(0), 256);
@@ -66,11 +87,11 @@ Palette* Palette::createGrayscale()
   return graypal;
 }
 
-void Palette::resize(int ncolors)
+void Palette::resize(int ncolors, color_t color)
 {
   ASSERT(ncolors >= 0);
 
-  m_colors.resize(ncolors, doc::rgba(0, 0, 0, 255));
+  m_colors.resize(ncolors, color);
   ++m_modifications;
 }
 
@@ -85,6 +106,16 @@ bool Palette::hasAlpha() const
   for (int i=0; i<(int)m_colors.size(); ++i)
     if (rgba_geta(getEntry(i)) < 255)
       return true;
+  return false;
+}
+
+bool Palette::hasSemiAlpha() const
+{
+  for (int i=0; i<(int)m_colors.size(); ++i) {
+    int a = rgba_geta(getEntry(i));
+    if (a > 0 && a < 255)
+      return true;
+  }
   return false;
 }
 
@@ -134,6 +165,22 @@ int Palette::countDiff(const Palette* other, int* from, int* to) const
   }
 
   return diff;
+}
+
+void Palette::addNonRepeatedColors(const Palette* palette,
+                                   const int max)
+{
+  ASSERT(palette);
+  if (!palette || size() >= max)
+    return;
+  for (int i=0; i < palette->size(); i++) {
+    color_t newColor = palette->getEntry(i);
+    if (!findExactMatch(newColor)) {
+      addEntry(newColor);
+      if (size() >= max)
+        return;
+    }
+  }
 }
 
 bool Palette::isBlack() const
@@ -189,6 +236,64 @@ void Palette::makeGradient(int from, int to)
   }
 }
 
+void Palette::makeHueGradient(int from, int to)
+{
+  int r1, g1, b1, a1;
+  int r2, g2, b2, a2;
+  int i, n;
+
+  ASSERT(from >= 0 && from < size());
+  ASSERT(to >= 0 && to < size());
+
+  if (from > to)
+    std::swap(from, to);
+
+  n = to - from;
+  if (n < 2)
+    return;
+
+  r1 = rgba_getr(getEntry(from));
+  g1 = rgba_getg(getEntry(from));
+  b1 = rgba_getb(getEntry(from));
+  a1 = rgba_geta(getEntry(from));
+
+  r2 = rgba_getr(getEntry(to));
+  g2 = rgba_getg(getEntry(to));
+  b2 = rgba_getb(getEntry(to));
+  a2 = rgba_geta(getEntry(to));
+
+  gfx::Hsv hsv1(gfx::Rgb(r1, g1, b1));
+  gfx::Hsv hsv2(gfx::Rgb(r2, g2, b2));
+
+  double h1 = hsv1.hue();
+  double s1 = hsv1.saturation();
+  double v1 = hsv1.value();
+
+  double h2 = hsv2.hue();
+  double s2 = hsv2.saturation();
+  double v2 = hsv2.value();
+
+  if (h2 >= h1) {
+    if (h2-h1 > 180.0)
+      h2 = h2 - 360.0;
+  }
+  else {
+    if (h1-h2 > 180.0)
+      h2 = h2 + 360.0;
+  }
+
+  gfx::Hsv hsv;
+  for (i=from+1; i<to; ++i) {
+    double t = double(i - from) / double(n);
+    hsv.hue(h1 + (h2 - h1) * t);
+    hsv.saturation(s1 + (s2 - s1) * t);
+    hsv.value(v1 + (v2 - v1) * t);
+    int alpha = int(a1 + double(a2 - a1) * t);
+    gfx::Rgb rgb(hsv);
+    setEntry(i, rgba(rgb.red(), rgb.green(), rgb.blue(), alpha));
+  }
+}
+
 int Palette::findExactMatch(int r, int g, int b, int a, int mask_index) const
 {
   for (int i=0; i<(int)m_colors.size(); ++i)
@@ -196,6 +301,15 @@ int Palette::findExactMatch(int r, int g, int b, int a, int mask_index) const
       return i;
 
   return -1;
+}
+
+bool Palette::findExactMatch(color_t color) const
+{
+  for (int i=0; i<(int)m_colors.size(); ++i) {
+    if (getEntry(i) == color)
+      return true;
+  }
+  return false;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -207,7 +321,7 @@ static uint32_t* col_diff_r;
 static uint32_t* col_diff_b;
 static uint32_t* col_diff_a;
 
-static void initBestfit()
+void Palette::initBestfit()
 {
   col_diff.resize(4*128, 0);
   col_diff_g = &col_diff[128*0];
@@ -230,9 +344,7 @@ int Palette::findBestfit(int r, int g, int b, int a, int mask_index) const
   ASSERT(g >= 0 && g <= 255);
   ASSERT(b >= 0 && b <= 255);
   ASSERT(a >= 0 && a <= 255);
-
-  if (col_diff.empty())
-    initBestfit();
+  ASSERT(!col_diff.empty());
 
   r >>= 3;
   g >>= 3;
@@ -268,8 +380,17 @@ int Palette::findBestfit(int r, int g, int b, int a, int mask_index) const
       }
     }
   }
-
   return bestfit;
+}
+
+int Palette::findMaskColor() const
+{
+  int size = m_colors.size();
+  for (int i = 0; i < size; ++i) {
+    if (m_colors[i] == 0)
+      return i;
+  }
+  return -1;
 }
 
 void Palette::applyRemap(const Remap& remap)

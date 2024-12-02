@@ -1,6 +1,6 @@
 // Aseprite Document Library
-// Copyright (c) 2020 Igara Studio S.A.
-// Copyright (c) 2001-2018 David Capello
+// Copyright (c) 2019-2024  Igara Studio S.A.
+// Copyright (c) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -36,11 +36,13 @@ bool write_image(std::ostream& os, const Image* image, CancelIO* cancel)
   write16(os, image->height());        // Height
   write32(os, image->maskColor());     // Mask color
 
-  int rowSize = image->getRowStrideSize();
+  // Number of bytes for visible pixels on each row
+  const int widthBytes = image->widthBytes();
+
 #if 0
   {
     for (int c=0; c<image->height(); c++)
-      os.write((char*)image->getPixelAddress(0, c), rowSize);
+      os.write((char*)image->getPixelAddress(0, c), widthBytes);
   }
 #else
   {
@@ -65,7 +67,7 @@ bool write_image(std::ostream& os, const Image* image, CancelIO* cancel)
       }
 
       zstream.next_in = (Bytef*)image->getPixelAddress(0, y);
-      zstream.avail_in = rowSize;
+      zstream.avail_in = widthBytes;
       int flush = (y == image->height()-1 ? Z_FINISH: Z_NO_FLUSH);
 
       do {
@@ -100,7 +102,7 @@ bool write_image(std::ostream& os, const Image* image, CancelIO* cancel)
   return true;
 }
 
-Image* read_image(std::istream& is, bool setId)
+Image* read_image(std::istream& is, const bool setId)
 {
   ObjectId id = read32(is);
   int pixelFormat = read8(is);          // Pixel format
@@ -111,18 +113,21 @@ Image* read_image(std::istream& is, bool setId)
   if ((pixelFormat != IMAGE_RGB &&
        pixelFormat != IMAGE_GRAYSCALE &&
        pixelFormat != IMAGE_INDEXED &&
-       pixelFormat != IMAGE_BITMAP) ||
+       pixelFormat != IMAGE_BITMAP &&
+       pixelFormat != IMAGE_TILEMAP) ||
       (width < 1 || height < 1) ||
       (width > 0xfffff || height > 0xfffff))
     return nullptr;
 
-  std::unique_ptr<Image> image(Image::create(static_cast<PixelFormat>(pixelFormat), width, height));
-  int rowSize = image->getRowStrideSize();
+  std::unique_ptr<Image> image(
+    Image::create(static_cast<PixelFormat>(pixelFormat), width, height));
+
+  const int widthBytes = image->widthBytes();
 
 #if 0
   {
     for (int c=0; c<image->height(); c++)
-      is.read((char*)image->getPixelAddress(0, c), rowSize);
+      is.read((char*)image->getPixelAddress(0, c), widthBytes);
   }
 #else
   {
@@ -137,13 +142,12 @@ Image* read_image(std::istream& is, bool setId)
     if (err != Z_OK)
       throw base::Exception("ZLib error %d in inflateInit().", err);
 
-    int uncompressed_size = image->height() * rowSize;
-    int uncompressed_offset = 0;
     int remain = avail_bytes;
 
     std::vector<uint8_t> compressed(4096);
-    uint8_t* address = image->getPixelAddress(0, 0);
-    uint8_t* address_end = image->getPixelAddress(0, 0) + uncompressed_size;
+    int y = 0;
+    uint8_t* address = nullptr;
+    uint8_t* address_end = nullptr;
 
     while (remain > 0) {
       int len = std::min(remain, int(compressed.size()));
@@ -164,6 +168,26 @@ Image* read_image(std::istream& is, bool setId)
       zstream.avail_in = (uInt)bytes_read;
 
       do {
+        if (address == address_end) {
+          if (y < image->height()) {
+            address = image->getPixelAddress(0, y++);
+            address_end = address + widthBytes;
+          }
+          else {
+            // Special reported case where we just fill the whole
+            // output image buffer (avail_out == 0), and more input
+            // was previously reported as available (avail_in != 0).
+            //
+            // Not sure why zlib reports this in certain cases, where
+            // avail_in != 0 and err == Z_OK instead of err ==
+            // Z_STREAM_END and we have to do a final inflate() call
+            // (even w/avail_out=0) to get the final Z_STREAM_END
+            // result.
+            ASSERT(y == image->height());
+            ASSERT(err == Z_OK);
+          }
+        }
+
         zstream.next_out = (Bytef*)address;
         zstream.avail_out = address_end - address;
 
@@ -173,10 +197,6 @@ Image* read_image(std::istream& is, bool setId)
 
         int uncompressed_bytes = (int)((address_end - address) - zstream.avail_out);
         if (uncompressed_bytes > 0) {
-          if (uncompressed_offset+uncompressed_bytes > uncompressed_size)
-            throw base::Exception("Bad compressed image.");
-
-          uncompressed_offset += uncompressed_bytes;
           address += uncompressed_bytes;
         }
       } while (zstream.avail_in != 0 && zstream.avail_out == 0);

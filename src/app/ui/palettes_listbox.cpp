@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2020  Igara Studio S.A.
+// Copyright (C) 2020-2024  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -69,12 +69,13 @@ class PalettesListItem : public ResourceListItem {
   private:
     void onInitTheme(InitThemeEvent& ev) override {
       IconButton::onInitTheme(ev);
-      setBgColor(
-        SkinTheme::instance()->colors.listitemNormalFace());
+
+      auto theme = SkinTheme::get(this);
+      setBgColor(theme->colors.listitemNormalFace());
     }
 
-    void onClick(Event& ev) override {
-      IconButton::onClick(ev);
+    void onClick() override {
+      IconButton::onClick();
 
       std::string::size_type j, i = m_comment.find("http");
       if (i != std::string::npos) {
@@ -117,19 +118,21 @@ private:
 };
 
 PalettesListBox::PalettesListBox()
-  : ResourcesListBox(new ResourcesLoader(new PalettesLoaderDelegate))
+  : ResourcesListBox(
+    new ResourcesLoader(
+      std::make_unique<PalettesLoaderDelegate>()))
 {
   addChild(&m_tooltips);
 
   m_extPaletteChanges =
     App::instance()->extensions().PalettesChange.connect(
-      [this]{ reload(); });
+      [this]{ markToReload(); });
   m_extPresetsChanges =
     App::instance()->PalettePresetsChange.connect(
-      [this]{ reload(); });
+      [this]{ markToReload(); });
 }
 
-doc::Palette* PalettesListBox::selectedPalette()
+const doc::Palette* PalettesListBox::selectedPalette()
 {
   Resource* resource = selectedResource();
   if (!resource)
@@ -145,14 +148,15 @@ ResourceListItem* PalettesListBox::onCreateResourceItem(Resource* resource)
 
 void PalettesListBox::onResourceChange(Resource* resource)
 {
-  doc::Palette* palette = static_cast<PaletteResource*>(resource)->palette();
+  const doc::Palette* palette = static_cast<PaletteResource*>(resource)->palette();
   PalChange(palette);
 }
 
 void PalettesListBox::onPaintResource(Graphics* g, gfx::Rect& bounds, Resource* resource)
 {
-  doc::Palette* palette = static_cast<PaletteResource*>(resource)->palette();
-  os::Surface* tick = SkinTheme::instance()->parts.checkSelected()->bitmap(0);
+  auto theme = SkinTheme::get(this);
+  const doc::Palette* palette = static_cast<PaletteResource*>(resource)->palette();
+  os::Surface* tick = theme->parts.checkSelected()->bitmap(0);
 
   // Draw tick (to say "this palette matches the active sprite
   // palette").

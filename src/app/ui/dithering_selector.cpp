@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019-2021  Igara Studio S.A.
+// Copyright (C) 2019-2024  Igara Studio S.A.
 // Copyright (C) 2017  David Capello
 //
 // This program is distributed under the terms of
@@ -12,7 +12,9 @@
 #include "app/ui/dithering_selector.h"
 
 #include "app/app.h"
+#include "app/console.h"
 #include "app/extensions.h"
+#include "app/i18n/strings.h"
 #include "app/modules/palettes.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/util/conversion_to_surface.h"
@@ -130,7 +132,7 @@ private:
 
   void onPaint(PaintEvent& ev) override {
     Graphics* g = ev.graphics();
-    skin::SkinTheme* theme = static_cast<skin::SkinTheme*>(this->theme());
+    auto theme = skin::SkinTheme::get(this);
 
     gfx::Color fg, bg;
     if (isSelected()) {
@@ -149,14 +151,20 @@ private:
     g->drawText(text(), fg, bg,
                 gfx::Point(rc.x+2*guiscale(),
                            rc.y+2*guiscale()));
-    g->drawRgbaSurface(
+
+    ui::Paint paint;
+    paint.blendMode(os::BlendMode::SrcOver);
+
+    g->drawSurface(
       preview(),
       preview()->bounds(),
       gfx::Rect(
         rc.x+2*guiscale(),
         rc.y+4*guiscale()+textsz.h,
         preview()->width()*guiscale(),
-        preview()->height()*guiscale()));
+        preview()->height()*guiscale()),
+      os::Sampling(),
+      &paint);
   }
 
   bool m_matrixOnly;
@@ -187,10 +195,17 @@ void DitheringSelector::onInitTheme(ui::InitThemeEvent& ev)
 {
   ComboBox::onInitTheme(ev);
   if (getItem(0))
-    setSizeHint(getItem(0)->sizeHint());
+    setSizeHint(calcItemSizeHint(0));
 }
 
-void DitheringSelector::regenerate()
+void DitheringSelector::setSelectedItemByName(const std::string& name)
+{
+  int index = findItemIndex(name);
+  setSelectedItemIndex(index);
+  regenerate(index);
+}
+
+void DitheringSelector::regenerate(int selectedItemIndex)
 {
   deleteAllItems();
 
@@ -200,36 +215,56 @@ void DitheringSelector::regenerate()
   switch (m_type) {
     case SelectBoth:
       addItem(new DitherItem(render::DitheringAlgorithm::None,
-                             render::DitheringMatrix(), "No Dithering"));
-      for (const auto& it : ditheringMatrices) {
-        addItem(
-          new DitherItem(
+                             render::DitheringMatrix(),
+                             Strings::dithering_selector_no_dithering()));
+      for (const auto* it : ditheringMatrices) {
+        try {
+          addItem(new DitherItem(
             render::DitheringAlgorithm::Ordered,
-            it.matrix(),
-            "Ordered Dithering+" + it.name()));
+            it->matrix(),
+            Strings::dithering_selector_ordered_dithering() + it->name()));
+        }
+        catch (const std::exception& e) {
+          LOG(ERROR, "%s\n", e.what());
+          Console::showException(e);
+        }
       }
-      for (const auto& it : ditheringMatrices) {
-        addItem(
-          new DitherItem(
-            render::DitheringAlgorithm::Old,
-            it.matrix(),
-            "Old Dithering+" + it.name()));
+      for (const auto* it : ditheringMatrices) {
+        try {
+          addItem(
+            new DitherItem(
+              render::DitheringAlgorithm::Old,
+              it->matrix(),
+              Strings::dithering_selector_old_dithering() + it->name()));
+        }
+        catch (const std::exception& e) {
+          LOG(ERROR, "%s\n", e.what());
+          Console::showException(e);
+        }
       }
       addItem(
         new DitherItem(
           render::DitheringAlgorithm::ErrorDiffusion,
           render::DitheringMatrix(),
-          "Floyd-Steinberg Error Diffusion Dithering"));
+          Strings::dithering_selector_floyd_steinberg()));
       break;
     case SelectMatrix:
-      addItem(new DitherItem(render::DitheringMatrix(), "No Dithering"));
-      for (auto& it : ditheringMatrices)
-        addItem(new DitherItem(it.matrix(), it.name()));
+      addItem(new DitherItem(render::DitheringMatrix(),
+                             Strings::dithering_selector_no_dithering()));
+      for (const auto* it : ditheringMatrices) {
+        try {
+          addItem(new DitherItem(it->matrix(), it->name()));
+        }
+        catch (const std::exception& e) {
+          LOG(ERROR, "%s\n", e.what());
+          Console::showException(e);
+        }
+      }
       break;
   }
-
-  setSelectedItemIndex(0);
-  setSizeHint(getItem(0)->sizeHint());
+  selectedItemIndex = std::clamp(selectedItemIndex, 0, std::max(0, getItemCount()-1));
+  setSelectedItemIndex(selectedItemIndex);
+  setSizeHint(calcItemSizeHint(selectedItemIndex));
 }
 
 render::DitheringAlgorithm DitheringSelector::ditheringAlgorithm()
@@ -248,6 +283,20 @@ render::DitheringMatrix DitheringSelector::ditheringMatrix()
     return item->matrix();
   else
     return render::DitheringMatrix();
+}
+
+gfx::Size DitheringSelector::calcItemSizeHint(int index)
+{
+  auto item = getItem(index);
+  if (item) {
+    return
+      item->sizeHint()
+      // Added offset to prevent unnecessary scrollbar in X dimension
+      + gfx::Size(6*guiscale(), 0);
+  }
+  else {
+    return gfx::Size(0, 0);
+  }
 }
 
 } // namespace app

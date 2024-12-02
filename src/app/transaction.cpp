@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -15,6 +15,7 @@
 #include "app/context_access.h"
 #include "app/doc.h"
 #include "app/doc_undo.h"
+#include "app/i18n/strings.h"
 #include "app/modules/palettes.h"
 #include "doc/sprite.h"
 #include "ui/manager.h"
@@ -25,6 +26,11 @@
 namespace app {
 
 using namespace doc;
+
+CannotModifyWhenReadOnlyException::CannotModifyWhenReadOnlyException() throw()
+  : base::Exception(Strings::statusbar_tips_cannot_modify_readonly_sprite())
+{
+}
 
 Transaction::Transaction(
   Context* ctx,
@@ -46,8 +52,7 @@ Transaction::Transaction(
   m_undo = m_doc->undoHistory();
 
   m_cmds = new CmdTransaction(label,
-    modification == Modification::ModifyDocument,
-    m_undo->savedCounter());
+                              modification == Modification::ModifyDocument);
 
   // Here we are executing an empty CmdTransaction, just to save the
   // SpritePosition. Sub-cmds are executed then one by one, in
@@ -90,9 +95,7 @@ void Transaction::commit()
   TX_TRACE("TX: Commit <%s>\n", m_cmds->label().c_str());
 
   m_cmds->updateSpritePositionAfter();
-#ifdef ENABLE_UI
   const SpritePosition sprPos = m_cmds->spritePositionAfterExecute();
-#endif
 
   m_undo->add(m_cmds);
   m_cmds = nullptr;
@@ -103,7 +106,6 @@ void Transaction::commit()
     m_doc->generateMaskBoundaries();
   }
 
-#ifdef ENABLE_UI
   if (int(m_changes) & int(Changes::kColorChange)) {
     ASSERT(m_doc);
     ASSERT(m_doc->sprite());
@@ -118,7 +120,6 @@ void Transaction::commit()
     if (m_ctx->isUIAvailable())
       ui::Manager::getDefault()->invalidate();
   }
-#endif
 }
 
 void Transaction::rollbackAndStartAgain()
@@ -141,19 +142,29 @@ void Transaction::rollback(CmdTransaction* newCmds)
 
 void Transaction::execute(Cmd* cmd)
 {
-  try {
-    cmd->execute(m_ctx);
-  }
-  catch (...) {
+  // Read-only sprites cannot be modified.
+  if (m_doc->isReadOnly()) {
     delete cmd;
-    throw;
+    throw CannotModifyWhenReadOnlyException();
+  }
+
+  // If we are undoing/redoing, just throw an exception, we cannot
+  // modify the sprite while we are moving throw the undo history.
+  // To undo/redo we have just to call the onUndo/onRedo of each
+  // app::Cmd.
+  if (m_doc->isUndoing()) {
+    delete cmd;
+    throw CannotModifyWhenUndoingException();
   }
 
   try {
-    m_cmds->add(cmd);
+    // We have to add the "cmd" to the sequence (CmdTransaction) and
+    // then execute it. This is because the execution can generate
+    // some signals that could add/execute new actions to the undo
+    // history/sequence.
+    m_cmds->addAndExecute(m_ctx, cmd);
   }
   catch (...) {
-    cmd->undo();
     delete cmd;
     throw;
   }

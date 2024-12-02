@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2023  Igara Studio S.A.
 // Copyright (C) 2018  David Capello
 //
 // This program is distributed under the terms of
@@ -28,9 +28,9 @@ namespace {
 
 int Slice_eq(lua_State* L)
 {
-  const auto a = get_docobj<Slice>(L, 1);
-  const auto b = get_docobj<Slice>(L, 2);
-  lua_pushboolean(L, a->id() == b->id());
+  const auto a = may_get_docobj<Slice>(L, 1);
+  const auto b = may_get_docobj<Slice>(L, 2);
+  lua_pushboolean(L, (!a && !b) || (a && b && a->id() == b->id()));
   return 1;
 }
 
@@ -83,7 +83,7 @@ int Slice_set_name(lua_State* L)
   auto slice = get_docobj<Slice>(L, 1);
   const char* name = lua_tostring(L, 2);
   if (name) {
-    Tx tx;
+    Tx tx(slice->sprite());
     tx(new cmd::SetSliceName(slice, name));
     tx.commit();
   }
@@ -98,7 +98,7 @@ int Slice_set_bounds(lua_State* L)
   if (const SliceKey* srcKey = slice->getByFrame(0))
     key = *srcKey;
   key.setBounds(bounds);
-  Tx tx;
+  Tx tx(slice->sprite());
   tx(new cmd::SetSliceKey(slice, 0, key));
   tx.commit();
   return 0;
@@ -112,7 +112,7 @@ int Slice_set_center(lua_State* L)
   if (const SliceKey* srcKey = slice->getByFrame(0))
     key = *srcKey;
   key.setCenter(center);
-  Tx tx;
+  Tx tx(slice->sprite());
   tx(new cmd::SetSliceKey(slice, 0, key));
   tx.commit();
   return 0;
@@ -126,7 +126,7 @@ int Slice_set_pivot(lua_State* L)
   if (const SliceKey* srcKey = slice->getByFrame(0))
     key = *srcKey;
   key.setPivot(pivot);
-  Tx tx;
+  Tx tx(slice->sprite());
   tx(new cmd::SetSliceKey(slice, 0, key));
   tx.commit();
   return 0;
@@ -145,6 +145,7 @@ const Property Slice_properties[] = {
   { "pivot", Slice_get_pivot, Slice_set_pivot },
   { "color", UserData_get_color<Slice>, UserData_set_color<Slice> },
   { "data", UserData_get_text<Slice>, UserData_set_text<Slice> },
+  { "properties", UserData_get_properties<Slice>, UserData_set_properties<Slice> },
   { nullptr, nullptr, nullptr }
 };
 
